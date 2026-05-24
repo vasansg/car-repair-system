@@ -1,0 +1,11 @@
+.text-purple {
+    color: #6f42c1 !important;
+}
+.btn-outline-purple {
+    color: #6f42c1;
+    border-color: #6f42c1;
+}
+.btn-outline-purple:hover {
+    background-color: #6f42c1;
+    color: white;
+}

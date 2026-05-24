@@ -1,14 +1,13 @@
 {
   "functions": {
-    "*.php": {
+    "api/*.php": {
       "runtime": "vercel-php@0.6.0"
     }
   },
-  "routes": [
-    { "src": "/", "dest": "/login.php" },
-    { "src": "/(.*\\.php)", "dest": "/$1" },
-    { "src": "/assets/(.*)", "dest": "/assets/$1" },
-    { "src": "/uploads/(.*)", "dest": "/uploads/$1" },
-    { "src": "/includes/(.*)", "dest": "/includes/$1" }
+  "rewrites": [
+    { "source": "/", "destination": "/api/login.php" },
+    { "source": "/:path*.php", "destination": "/api/:path*.php" },
+    { "source": "/assets/:path*", "destination": "/assets/:path*" },
+    { "source": "/uploads/:path*", "destination": "/uploads/:path*" }
   ]
 }
