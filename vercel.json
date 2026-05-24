@@ -1,13 +1,14 @@
 {
   "functions": {
     "*.php": {
-      "runtime": "vercel-php@0.7.2"
+      "runtime": "vercel-php@0.6.0"
     }
   },
   "routes": [
-    { "src": "/",           "dest": "/login.php" },
+    { "src": "/", "dest": "/login.php" },
     { "src": "/(.*\\.php)", "dest": "/$1" },
     { "src": "/assets/(.*)", "dest": "/assets/$1" },
-    { "src": "/uploads/(.*)", "dest": "/uploads/$1" }
+    { "src": "/uploads/(.*)", "dest": "/uploads/$1" },
+    { "src": "/includes/(.*)", "dest": "/includes/$1" }
   ]
 }
