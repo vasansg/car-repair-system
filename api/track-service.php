@@ -1,4 +1,5 @@
 ﻿<?php
+ob_start();
 
 // ================= AJAX CHECK - MUST BE FIRST =================
 if (isset($_GET['ajax_check'])) {
