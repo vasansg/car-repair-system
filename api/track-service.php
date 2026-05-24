@@ -1,5 +1,4 @@
-<?php
-session_start();
+﻿<?php
 
 // ================= AJAX CHECK - MUST BE FIRST =================
 if (isset($_GET['ajax_check'])) {

@@ -1,5 +1,4 @@
-<?php
-session_start();
+﻿<?php
 
 // ========== PREVENT CACHE AND BACK BUTTON AFTER LOGOUT ==========
 header("Cache-Control: no-cache, no-store, must-revalidate, max-age=0");

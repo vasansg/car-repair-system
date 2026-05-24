@@ -1,5 +1,4 @@
-<?php
-session_start();
+﻿<?php
 
 /* ================= AUTH CHECK ================= */
 if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {

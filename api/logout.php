@@ -1,5 +1,4 @@
-<?php
-session_start();
+﻿<?php
 
 // Clear all session variables
 $_SESSION = array();
