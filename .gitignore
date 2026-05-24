@@ -1,0 +1,10 @@
+.env
+uploads/spare_parts/*.jpg
+uploads/spare_parts/*.png
+uploads/spare_parts/*.jpeg
+uploads/spare_parts/*.gif
+uploads/spare_parts/*.webp
+vendor/
+*.log
+.DS_Store
+Thumbs.db
