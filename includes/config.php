@@ -19,26 +19,26 @@ if (file_exists($envFile)) {
     }
 }
 
-// Build DSN — supports Railway's DATABASE_URL or individual vars
-$database_url = getenv('DATABASE_URL');
-if ($database_url) {
-    $p = parse_url($database_url);
+// Build DSN — supports Railway's MYSQL_PUBLIC_URL or individual DB_* vars
+$mysql_url = getenv('MYSQL_PUBLIC_URL') ?: getenv('MYSQL_URL') ?: getenv('DATABASE_URL');
+if ($mysql_url) {
+    $p = parse_url($mysql_url);
     $dsn = sprintf(
-        'pgsql:host=%s;port=%d;dbname=%s;sslmode=require',
+        'mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',
         $p['host'],
-        $p['port'] ?? 5432,
+        $p['port'] ?? 3306,
         ltrim($p['path'], '/')
     );
     $db_user = $p['user'];
     $db_pass = $p['pass'];
 } else {
     $dsn = sprintf(
-        'pgsql:host=%s;port=%s;dbname=%s',
-        getenv('DB_HOST') ?: 'localhost',
-        getenv('DB_PORT') ?: '5432',
+        'mysql:host=%s;port=%s;dbname=%s;charset=utf8mb4',
+        getenv('DB_HOST') ?: '127.0.0.1',
+        getenv('DB_PORT') ?: '3306',
         getenv('DB_NAME') ?: 'car_repair_db'
     );
-    $db_user = getenv('DB_USER') ?: 'postgres';
+    $db_user = getenv('DB_USER') ?: 'root';
     $db_pass = getenv('DB_PASS') ?: '';
 }
 

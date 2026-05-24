@@ -39,7 +39,7 @@ if (isset($_GET['check_updates'])) {
     // Check for new bookings since last check (for badge increment)
     $new_bookings_since_check = 0;
     $bookings_sql = "SELECT COUNT(*) as new_count FROM bookings
-                     WHERE status = 'pending' AND EXTRACT(EPOCH FROM created_at)::bigint > ?";
+                     WHERE status = 'pending' AND UNIX_TIMESTAMP(created_at) > ?";
     $bookings_stmt = $pdo->prepare($bookings_sql);
     $bookings_stmt->execute([$last_check]);
     $new_bookings_since_check = $bookings_stmt->fetch(PDO::FETCH_ASSOC)['new_count'];
@@ -47,7 +47,7 @@ if (isset($_GET['check_updates'])) {
     // Check for new customers since last check
     $new_customers_since_check = 0;
     $customers_sql = "SELECT COUNT(*) as new_count FROM users
-                      WHERE role = 'customer' AND EXTRACT(EPOCH FROM created_at)::bigint > ?";
+                      WHERE role = 'customer' AND UNIX_TIMESTAMP(created_at) > ?";
     $customers_stmt = $pdo->prepare($customers_sql);
     $customers_stmt->execute([$last_check]);
     $new_customers_since_check = $customers_stmt->fetch(PDO::FETCH_ASSOC)['new_count'];
@@ -55,7 +55,7 @@ if (isset($_GET['check_updates'])) {
     // Check for new vehicles since last check
     $new_vehicles_since_check = 0;
     $vehicles_sql = "SELECT COUNT(*) as new_count FROM vehicles
-                     WHERE EXTRACT(EPOCH FROM created_at)::bigint > ?";
+                     WHERE UNIX_TIMESTAMP(created_at) > ?";
     $vehicles_stmt = $pdo->prepare($vehicles_sql);
     $vehicles_stmt->execute([$last_check]);
     $new_vehicles_since_check = $vehicles_stmt->fetch(PDO::FETCH_ASSOC)['new_count'];
@@ -63,21 +63,21 @@ if (isset($_GET['check_updates'])) {
     // Get total unviewed counts (since admin last viewed the module)
     $unviewed_bookings = 0;
     $unviewed_bookings_sql = "SELECT COUNT(*) as count FROM bookings
-                              WHERE status = 'pending' AND EXTRACT(EPOCH FROM created_at)::bigint > ?";
+                              WHERE status = 'pending' AND UNIX_TIMESTAMP(created_at) > ?";
     $unviewed_bookings_stmt = $pdo->prepare($unviewed_bookings_sql);
     $unviewed_bookings_stmt->execute([$last_viewed_bookings]);
     $unviewed_bookings = $unviewed_bookings_stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
     $unviewed_customers = 0;
     $unviewed_customers_sql = "SELECT COUNT(*) as count FROM users
-                               WHERE role = 'customer' AND EXTRACT(EPOCH FROM created_at)::bigint > ?";
+                               WHERE role = 'customer' AND UNIX_TIMESTAMP(created_at) > ?";
     $unviewed_customers_stmt = $pdo->prepare($unviewed_customers_sql);
     $unviewed_customers_stmt->execute([$last_viewed_customers]);
     $unviewed_customers = $unviewed_customers_stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
     $unviewed_vehicles = 0;
     $unviewed_vehicles_sql = "SELECT COUNT(*) as count FROM vehicles
-                              WHERE EXTRACT(EPOCH FROM created_at)::bigint > ?";
+                              WHERE UNIX_TIMESTAMP(created_at) > ?";
     $unviewed_vehicles_stmt = $pdo->prepare($unviewed_vehicles_sql);
     $unviewed_vehicles_stmt->execute([$last_viewed_vehicles]);
     $unviewed_vehicles = $unviewed_vehicles_stmt->fetch(PDO::FETCH_ASSOC)['count'];
@@ -176,12 +176,12 @@ $last_viewed_customers = isset($_SESSION['viewed_customers']) ? $_SESSION['viewe
 $new_bookings_count = 0;
 $new_customers_count = 0;
 
-$new_bookings_sql = "SELECT COUNT(*) as count FROM bookings WHERE status = 'pending' AND EXTRACT(EPOCH FROM created_at)::bigint > ?";
+$new_bookings_sql = "SELECT COUNT(*) as count FROM bookings WHERE status = 'pending' AND UNIX_TIMESTAMP(created_at) > ?";
 $new_bookings_stmt = $pdo->prepare($new_bookings_sql);
 $new_bookings_stmt->execute([$last_viewed_bookings]);
 $new_bookings_count = $new_bookings_stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
-$new_customers_sql = "SELECT COUNT(*) as count FROM users WHERE role = 'customer' AND EXTRACT(EPOCH FROM created_at)::bigint > ?";
+$new_customers_sql = "SELECT COUNT(*) as count FROM users WHERE role = 'customer' AND UNIX_TIMESTAMP(created_at) > ?";
 $new_customers_stmt = $pdo->prepare($new_customers_sql);
 $new_customers_stmt->execute([$last_viewed_customers]);
 $new_customers_count = $new_customers_stmt->fetch(PDO::FETCH_ASSOC)['count'];

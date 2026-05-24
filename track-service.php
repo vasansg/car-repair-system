@@ -22,7 +22,7 @@ if (isset($_GET['ajax_check'])) {
                           FROM bookings b
                           WHERE b.user_id = ?
                           AND b.status IN ('pending', 'confirmed', 'repairing', 'completed', 'cancelled')
-                          AND EXTRACT(EPOCH FROM b.updated_at)::bigint > ?";
+                          AND UNIX_TIMESTAMP( b.updated_at) > ?";
 
     $status_stmt = $pdo->prepare($status_change_sql);
     $status_stmt->execute([$user_id, $last_check]);
@@ -39,7 +39,7 @@ if (isset($_GET['ajax_check'])) {
                     WHERE b.user_id = ?
                     AND b.status IN ('pending', 'confirmed', 'repairing')
                     AND u.is_visible_to_customer = 1
-                    AND EXTRACT(EPOCH FROM u.created_at)::bigint > ?
+                    AND UNIX_TIMESTAMP( u.created_at) > ?
                     ORDER BY u.created_at DESC";
 
     $updates_stmt = $pdo->prepare($updates_sql);

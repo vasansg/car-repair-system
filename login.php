@@ -15,7 +15,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     $username = trim($_POST['username']);
     
     // First, check if the users table exists
-    $table_check = $pdo->query("SELECT 1 FROM information_schema.tables WHERE table_name = 'users' AND table_schema = 'public'");
+    $table_check = $pdo->query("SELECT 1 FROM information_schema.tables WHERE table_name = 'users' AND table_schema = DATABASE()");
     if (!$table_check->fetch()) {
         $error = "Database not properly set up. Please run the installation script.";
     } else {

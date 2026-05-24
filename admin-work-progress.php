@@ -108,7 +108,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Update the corresponding suggestion status to 'done'
         $update_suggestion_sql = "UPDATE service_suggestions
                                   SET status = 'done',
-                                      completed_notes = CONCAT('Completed on ', TO_CHAR(NOW(), 'DD/MM/YYYY'), ' (Booking #', ?, ')'),
+                                      completed_notes = CONCAT('Completed on ', DATE_FORMAT(NOW(), '%d/%m/%Y'), ' (Booking #', ?, ')'),
                                       updated_at = NOW()
                                   WHERE vehicle_id = ?
                                   AND service_category_id = ?

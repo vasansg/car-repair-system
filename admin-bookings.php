@@ -52,7 +52,7 @@ if (isset($_GET['check_new_bookings'])) {
     
     // Check for new pending bookings
     $new_sql = "SELECT COUNT(*) as new_count FROM bookings
-                WHERE status = 'pending' AND EXTRACT(EPOCH FROM created_at)::bigint > ? AND admin_viewed = 0";
+                WHERE status = 'pending' AND UNIX_TIMESTAMP(created_at) > ? AND admin_viewed = 0";
     $new_stmt = $pdo->prepare($new_sql);
     $new_stmt->execute([$last_check]);
     $new_count = $new_stmt->fetch(PDO::FETCH_ASSOC)['new_count'];
