@@ -23,14 +23,24 @@ foreach ([__DIR__ . '/../.env', __DIR__ . '/../../.env'] as $envFile) {
 
 require_once __DIR__ . '/FirebaseService.php';
 
-$serviceAccountPath = getenv('FIREBASE_SERVICE_ACCOUNT')
-    ?: __DIR__ . '/../../firebase-service-account.json';
+// Support JSON content via env var (for Vercel / serverless deployments)
+$serviceAccountJson = getenv('FIREBASE_SERVICE_ACCOUNT_JSON') ?: '';
+if ($serviceAccountJson) {
+    $tmpPath = sys_get_temp_dir() . '/firebase-sa-' . md5($serviceAccountJson) . '.json';
+    if (!file_exists($tmpPath)) {
+        file_put_contents($tmpPath, $serviceAccountJson);
+    }
+    $serviceAccountPath = $tmpPath;
+} else {
+    $serviceAccountPath = getenv('FIREBASE_SERVICE_ACCOUNT')
+        ?: __DIR__ . '/../../firebase-service-account.json';
+}
 
 if (!file_exists($serviceAccountPath)) {
     http_response_code(500);
     die(json_encode([
         'error' => true,
-        'message' => 'Firebase service account file not found. Place firebase-service-account.json in the project root or set FIREBASE_SERVICE_ACCOUNT in .env',
+        'message' => 'Firebase service account file not found. Set FIREBASE_SERVICE_ACCOUNT_JSON in your environment variables with the JSON content of your service account key.',
     ]));
 }
 
