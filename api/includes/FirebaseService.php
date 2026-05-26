@@ -56,12 +56,26 @@ class FirebaseService
             'exp'   => $now + 3600,
             'scope' => 'https://www.googleapis.com/auth/datastore https://www.googleapis.com/auth/devstorage.read_write',
         ]);
-        $res  = $this->http('POST', self::TOKEN_URL,
-            http_build_query(['grant_type' => 'urn:ietf:params:oauth2:grant-type:jwt-bearer', 'assertion' => $jwt]),
-            'application/x-www-form-urlencoded', false);
-        $data = json_decode($res ?? '', true);
+
+        // Use explicit CURLOPT_POST to ensure proper form-encoded request
+        $body = 'grant_type=' . rawurlencode('urn:ietf:params:oauth2:grant-type:jwt-bearer')
+              . '&assertion=' . rawurlencode($jwt);
+        $ch = curl_init(self::TOKEN_URL);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => $body,
+            CURLOPT_HTTPHEADER     => ['Content-Type: application/x-www-form-urlencoded'],
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_TIMEOUT        => 30,
+        ]);
+        $res  = curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        $data = json_decode($res ?: '', true);
         if (empty($data['access_token'])) {
-            throw new \RuntimeException('Firebase token request failed: ' . ($res ?? 'no response from Google'));
+            throw new \RuntimeException('Firebase token request failed (HTTP ' . $code . '): ' . ($res ?: 'no response'));
         }
         $this->cachedToken = $data['access_token'];
         $this->tokenExpiry = $now + ($data['expires_in'] ?? 3600);
