@@ -24,7 +24,9 @@ foreach ([__DIR__ . '/../.env', __DIR__ . '/../../.env'] as $envFile) {
 require_once __DIR__ . '/FirebaseService.php';
 
 // Support JSON content via env var (for Vercel / serverless deployments)
-$serviceAccountJson = getenv('FIREBASE_SERVICE_ACCOUNT_JSON') ?: '';
+$serviceAccountJson = getenv('FIREBASE_SERVICE_ACCOUNT_JSON')
+    ?: ($_ENV['FIREBASE_SERVICE_ACCOUNT_JSON'] ?? '')
+    ?: ($_SERVER['FIREBASE_SERVICE_ACCOUNT_JSON'] ?? '');
 if ($serviceAccountJson) {
     $tmpPath = sys_get_temp_dir() . '/firebase-sa-' . md5($serviceAccountJson) . '.json';
     if (!file_exists($tmpPath)) {
