@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 ob_start();
 
 // ========== PREVENT CACHE AND BACK BUTTON AFTER LOGOUT ==========

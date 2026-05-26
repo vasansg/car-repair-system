@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 ob_start();
 
 // ================= AJAX CHECK - MUST BE FIRST =================

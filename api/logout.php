@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 ob_start();
 
 // Clear all session variables
