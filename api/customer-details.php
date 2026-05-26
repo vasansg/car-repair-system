@@ -25,9 +25,9 @@ $first_name = explode(' ', $full_name)[0];
 require_once __DIR__ . '/includes/config.php';
 
 /* ================= GET CUSTOMER ID ================= */
-$customer_id = isset($_GET['id']) ? intval($_GET['id']) : 0;
+$customer_id = isset($_GET['id']) ? trim($_GET['id']) : '';
 
-if ($customer_id === 0) {
+if ($customer_id === '') {
     header("Location: admin-customers.php");
     exit();
 }
@@ -39,122 +39,110 @@ $success = '';
 // Update customer details
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_customer'])) {
     $full_name = trim($_POST['full_name']);
-    $email = trim($_POST['email']);
-    $phone = trim($_POST['phone']);
-    $username = trim($_POST['username']);
-    
+    $email     = trim($_POST['email']);
+    $phone     = trim($_POST['phone']);
+    $username  = trim($_POST['username']);
+
     if (empty($full_name) || empty($email) || empty($username)) {
         $error = 'Full name, email, and username are required!';
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $error = 'Please enter a valid email address!';
     } else {
-        // Check if email or username exists for other users
-        $checkSql = "SELECT id FROM users WHERE (email = ? OR username = ?) AND id != ?";
-        $checkStmt = $pdo->prepare($checkSql);
-        $checkStmt->execute([$email, $username, $customer_id]);
-        $checkRow = $checkStmt->fetch(PDO::FETCH_ASSOC);
+        // Check for duplicate email/username in other user documents
+        $byEmail    = $firebase->query('users', [['email',    '==', $email]]);
+        $byUsername = $firebase->query('users', [['username', '==', $username]]);
+        $conflict = array_merge(
+            array_filter($byEmail,    fn($u) => $u['id'] !== $customer_id),
+            array_filter($byUsername, fn($u) => $u['id'] !== $customer_id)
+        );
 
-        if ($checkRow) {
+        if (!empty($conflict)) {
             $error = 'Email or Username already exists for another user!';
+        } elseif ($firebase->updateDoc('users', $customer_id, [
+            'full_name' => $full_name,
+            'email'     => $email,
+            'phone'     => $phone,
+            'username'  => $username,
+        ])) {
+            $success = 'Customer details updated successfully!';
         } else {
-            $updateSql = "UPDATE users SET full_name = ?, email = ?, phone = ?, username = ? WHERE id = ?";
-            $updateStmt = $pdo->prepare($updateSql);
-
-            if ($updateStmt->execute([$full_name, $email, $phone, $username, $customer_id])) {
-                $success = 'Customer details updated successfully!';
-            } else {
-                $error = 'Error updating customer.';
-            }
+            $error = 'Error updating customer.';
         }
     }
 }
 
 // Add new vehicle
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_vehicle'])) {
-    $brand_name = strtoupper(trim($_POST['brand_name']));
-    $model = strtoupper(trim($_POST['model']));
-    $year = trim($_POST['year']);
-    $color = strtoupper(trim($_POST['color']));
+    $brand_name   = strtoupper(trim($_POST['brand_name']));
+    $model        = strtoupper(trim($_POST['model']));
+    $year         = trim($_POST['year']);
+    $color        = strtoupper(trim($_POST['color']));
     $number_plate = strtoupper(str_replace(' ', '', trim($_POST['number_plate'])));
-    
+
     if (empty($brand_name) || empty($model) || empty($year) || empty($color) || empty($number_plate)) {
         $error = 'All vehicle fields are required!';
     } elseif (!is_numeric($year) || $year < 1900 || $year > date('Y') + 1) {
         $error = 'Please enter a valid year!';
+    } elseif ($firebase->exists('vehicles', [['number_plate', '==', $number_plate]])) {
+        $error = 'This number plate is already registered!';
     } else {
-        // Check if number plate exists
-        $checkSql = "SELECT id FROM vehicles WHERE number_plate = ?";
-        $checkStmt = $pdo->prepare($checkSql);
-        $checkStmt->execute([$number_plate]);
-        $checkRow = $checkStmt->fetch(PDO::FETCH_ASSOC);
-
-        if ($checkRow) {
-            $error = 'This number plate is already registered!';
+        $vid = $firebase->addDoc('vehicles', [
+            'user_id'      => $customer_id,
+            'brand_name'   => $brand_name,
+            'model'        => $model,
+            'year'         => (int)$year,
+            'color'        => $color,
+            'number_plate' => $number_plate,
+            'created_at'   => gmdate('Y-m-d\TH:i:s\Z'),
+        ]);
+        if ($vid) {
+            header("Location: customer-details.php?id={$customer_id}&success=1");
+            exit();
         } else {
-            $insertSql = "INSERT INTO vehicles (user_id, brand_name, model, year, color, number_plate)
-                         VALUES (?, ?, ?, ?, ?, ?)";
-            $insertStmt = $pdo->prepare($insertSql);
-
-            if ($insertStmt->execute([$customer_id, $brand_name, $model, $year, $color, $number_plate])) {
-                $success = 'Vehicle added successfully!';
-                // Refresh page to show new vehicle
-                header("Location: customer-details.php?id=" . $customer_id . "&success=1");
-                exit();
-            } else {
-                $error = 'Error adding vehicle.';
-            }
+            $error = 'Error adding vehicle.';
         }
     }
 }
 
 // Update vehicle
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_vehicle'])) {
-    $vehicle_id = intval($_POST['vehicle_id']);
-    $brand_name = strtoupper(trim($_POST['brand_name']));
-    $model = strtoupper(trim($_POST['model']));
-    $year = trim($_POST['year']);
-    $color = strtoupper(trim($_POST['color']));
+    $vehicle_id   = trim($_POST['vehicle_id']);
+    $brand_name   = strtoupper(trim($_POST['brand_name']));
+    $model        = strtoupper(trim($_POST['model']));
+    $year         = trim($_POST['year']);
+    $color        = strtoupper(trim($_POST['color']));
     $number_plate = strtoupper(str_replace(' ', '', trim($_POST['number_plate'])));
-    
+
     if (empty($brand_name) || empty($model) || empty($year) || empty($color) || empty($number_plate)) {
         $error = 'All vehicle fields are required!';
     } elseif (!is_numeric($year) || $year < 1900 || $year > date('Y') + 1) {
         $error = 'Please enter a valid year!';
     } else {
-        // Check if number plate exists for other vehicles
-        $checkSql = "SELECT id FROM vehicles WHERE number_plate = ? AND id != ?";
-        $checkStmt = $pdo->prepare($checkSql);
-        $checkStmt->execute([$number_plate, $vehicle_id]);
-        $checkRow = $checkStmt->fetch(PDO::FETCH_ASSOC);
+        $existing = $firebase->query('vehicles', [['number_plate', '==', $number_plate]]);
+        $conflict = array_filter($existing, fn($v) => $v['id'] !== $vehicle_id);
 
-        if ($checkRow) {
+        if (!empty($conflict)) {
             $error = 'This number plate is already registered for another vehicle!';
+        } elseif ($firebase->updateDoc('vehicles', $vehicle_id, [
+            'brand_name'   => $brand_name,
+            'model'        => $model,
+            'year'         => (int)$year,
+            'color'        => $color,
+            'number_plate' => $number_plate,
+        ])) {
+            header("Location: customer-details.php?id={$customer_id}&updated=1");
+            exit();
         } else {
-            $updateSql = "UPDATE vehicles SET brand_name = ?, model = ?, year = ?, color = ?, number_plate = ?
-                         WHERE id = ? AND user_id = ?";
-            $updateStmt = $pdo->prepare($updateSql);
-
-            if ($updateStmt->execute([$brand_name, $model, $year, $color, $number_plate, $vehicle_id, $customer_id])) {
-                $success = 'Vehicle updated successfully!';
-                header("Location: customer-details.php?id=" . $customer_id . "&updated=1");
-                exit();
-            } else {
-                $error = 'Error updating vehicle.';
-            }
+            $error = 'Error updating vehicle.';
         }
     }
 }
 
 // Delete vehicle
 if (isset($_GET['delete_vehicle'])) {
-    $vehicle_id = intval($_GET['delete_vehicle']);
-    
-    $deleteSql = "DELETE FROM vehicles WHERE id = ? AND user_id = ?";
-    $deleteStmt = $pdo->prepare($deleteSql);
-
-    if ($deleteStmt->execute([$vehicle_id, $customer_id])) {
-        $success = 'Vehicle deleted successfully!';
-        header("Location: customer-details.php?id=" . $customer_id . "&deleted=1");
+    $vehicle_id = trim($_GET['delete_vehicle']);
+    if ($firebase->deleteDoc('vehicles', $vehicle_id)) {
+        header("Location: customer-details.php?id={$customer_id}&deleted=1");
         exit();
     } else {
         $error = 'Error deleting vehicle.';
@@ -168,23 +156,16 @@ if (isset($_GET['success']) || isset($_GET['updated']) || isset($_GET['deleted']
     if (isset($_GET['deleted'])) $success = 'Vehicle deleted successfully!';
 }
 
-/* ================= FETCH CUSTOMER DETAILS ================= */
-$customerSql = "SELECT id, full_name, email, phone, username, created_at
-                FROM users WHERE id = ?";
-$customerStmt = $pdo->prepare($customerSql);
-$customerStmt->execute([$customer_id]);
-$customer = $customerStmt->fetch(PDO::FETCH_ASSOC);
+/* ================= FETCH CUSTOMER DETAILS FROM FIRESTORE ================= */
+$customer = $firebase->getDoc('users', $customer_id);
 
 if (!$customer) {
-    header("Location: customer-details.php");
+    header("Location: admin-customers.php");
     exit();
 }
 
 /* ================= FETCH CUSTOMER VEHICLES ================= */
-$vehiclesSql = "SELECT * FROM vehicles WHERE user_id = ? ORDER BY created_at DESC";
-$vehiclesStmt = $pdo->prepare($vehiclesSql);
-$vehiclesStmt->execute([$customer_id]);
-$vehicles = $vehiclesStmt->fetchAll(PDO::FETCH_ASSOC);
+$vehicles = $firebase->query('vehicles', [['user_id', '==', $customer_id]], 'created_at', 'DESCENDING');
 
 $hour = date('G');
 if ($hour >= 5 && $hour < 12) {

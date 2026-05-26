@@ -26,23 +26,10 @@ $first_name = explode(' ', $full_name)[0];
 require_once __DIR__ . '/includes/config.php';
 
 /* ================= FETCH CUSTOMER DETAILS ================= */
-$customer = [];
-$sql = "SELECT id, full_name, email, phone, created_at
-        FROM users
-        WHERE id = ? AND role = 'customer'";
-$stmt = $pdo->prepare($sql);
-$stmt->execute([$user_id]);
-$customer = $stmt->fetch(PDO::FETCH_ASSOC);
+$customer = $firebase->getDoc('users', $user_id) ?? [];
 
 /* ================= FETCH REGISTERED VEHICLES ================= */
-$vehicles = [];
-$vehicle_sql = "SELECT id, brand_name, model, year, color, number_plate
-                FROM vehicles
-                WHERE user_id = ?
-                ORDER BY id DESC";
-$vehicle_stmt = $pdo->prepare($vehicle_sql);
-$vehicle_stmt->execute([$user_id]);
-$vehicles = $vehicle_stmt->fetchAll(PDO::FETCH_ASSOC);
+$vehicles = $firebase->query('vehicles', [['user_id', '==', $user_id]], 'created_at', 'DESCENDING');
 
 /* ================= UPDATE PROFILE ================= */
 $message = '';
@@ -50,12 +37,9 @@ $message_type = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
     $full_name = trim($_POST['full_name']);
-    $phone = trim($_POST['phone']);
-    
-    $update_sql = "UPDATE users SET full_name = ?, phone = ? WHERE id = ?";
-    $update_stmt = $pdo->prepare($update_sql);
+    $phone     = trim($_POST['phone']);
 
-    if ($update_stmt->execute([$full_name, $phone, $user_id])) {
+    if ($firebase->updateDoc('users', $user_id, ['full_name' => $full_name, 'phone' => $phone])) {
         $_SESSION['full_name'] = $full_name;
         $message = "Profile updated successfully!";
         $message_type = 'success';

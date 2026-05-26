@@ -18,303 +18,186 @@ if ($_SESSION['role'] !== 'admin') {
 }
 
 /* ================= USER DATA ================= */
-$full_name = $_SESSION['full_name'];
-$email = $_SESSION['email'];
+$full_name  = $_SESSION['full_name'];
+$email      = $_SESSION['email'];
 $first_name = explode(' ', $full_name)[0];
 
 /* ================= DATABASE CONNECTION ================= */
 require_once __DIR__ . '/includes/config.php';
 
-// Create uploads directory if not exists
-if (!file_exists('uploads/spare_parts/')) {
-    mkdir('uploads/spare_parts/', 0777, true);
-}
-
 /* ================= HANDLE FORM SUBMISSIONS ================= */
-$message = '';
+$message      = '';
 $message_type = '';
 
 // ADD NEW SPARE PART
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_part'])) {
-    $part_name = trim($_POST['part_name']);
-    $category = trim($_POST['category']);
-    $new_category = trim($_POST['new_category']);  // NEW: Get manual category input
-    $description = trim($_POST['description'] ?? '');
-    $price_min = !empty($_POST['price_min']) ? floatval($_POST['price_min']) : null;
-    $price_max = !empty($_POST['price_max']) ? floatval($_POST['price_max']) : null;
-    $status = $_POST['status'];
-    
-    // ========== HANDLE NEW CATEGORY ==========
-    // If user selected "other" and entered a new category name
+    $part_name    = trim($_POST['part_name']);
+    $category     = trim($_POST['category']);
+    $new_category = trim($_POST['new_category'] ?? '');
+    $description  = trim($_POST['description'] ?? '');
+    $price_min    = !empty($_POST['price_min']) ? (float)$_POST['price_min'] : null;
+    $price_max    = !empty($_POST['price_max']) ? (float)$_POST['price_max'] : null;
+    $status       = $_POST['status'];
+
     if ($category === 'other' && !empty($new_category)) {
         $category = $new_category;
-        
-        // Check if category already exists in spare_parts_categories table
-        $check_cat = $pdo->prepare("SELECT id FROM spare_parts_categories WHERE category_name = ?");
-        $check_cat->execute([$category]);
-        $cat_result = $check_cat->fetch(PDO::FETCH_ASSOC);
-
-        // If category does not exist, insert it for future use
-        if (!$cat_result) {
-            $insert_cat = $pdo->prepare("INSERT INTO spare_parts_categories (category_name, is_active) VALUES (?, 1)");
-            $insert_cat->execute([$category]);
-        }
     }
-    // ========== END CATEGORY HANDLING ==========
-    
-    // Check if part already exists
-    $check_sql = "SELECT id FROM spare_parts WHERE part_name = ?";
-    $check_stmt = $pdo->prepare($check_sql);
-    $check_stmt->execute([$part_name]);
-    $check_result = $check_stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    if (count($check_result) > 0) {
-        $message = "Part '$part_name' already exists!";
+    if ($firebase->exists('spare_parts', [['part_name', '==', $part_name]])) {
+        $message      = "Part '$part_name' already exists!";
         $message_type = 'danger';
     } else {
-        // Handle image upload
         $image_path = '';
         if (isset($_FILES['part_image']) && $_FILES['part_image']['error'] == 0) {
             $allowed = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
-            $filename = $_FILES['part_image']['name'];
-            $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
-            
+            $ext     = strtolower(pathinfo($_FILES['part_image']['name'], PATHINFO_EXTENSION));
             if (in_array($ext, $allowed)) {
-                $new_filename = time() . '_' . preg_replace('/[^a-zA-Z0-9]/', '_', $part_name) . '.' . $ext;
-                $upload_path = 'uploads/spare_parts/' . $new_filename;
-                
-                if (move_uploaded_file($_FILES['part_image']['tmp_name'], $upload_path)) {
-                    $image_path = $upload_path;
-                }
+                $storagePath = 'spare_parts/' . time() . '_' . preg_replace('/[^a-zA-Z0-9]/', '_', $part_name) . '.' . $ext;
+                $uploaded    = $firebase->uploadFile($_FILES['part_image']['tmp_name'], $storagePath, $_FILES['part_image']['type']);
+                if ($uploaded) $image_path = $storagePath;
             }
         }
-        
-        $insert_sql = "INSERT INTO spare_parts (part_name, category, description, price_min, price_max, image_path, status, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, NOW())";
-        $insert_stmt = $pdo->prepare($insert_sql);
 
-        if ($insert_stmt->execute([$part_name, $category, $description, $price_min, $price_max, $image_path, $status])) {
-            $part_id = $pdo->lastInsertId();
-
-            // Add brands and prices
-            if (isset($_POST['brands']) && is_array($_POST['brands'])) {
-                foreach ($_POST['brands'] as $brand_data) {
-                    if (!empty($brand_data['name'])) {
-                        $brand_name = trim($brand_data['name']);
-                        $brand_price = !empty($brand_data['price']) ? floatval($brand_data['price']) : null;
-
-                        // Check if brand exists
-                        $check_brand = $pdo->prepare("SELECT id FROM brands WHERE brand_name = ?");
-                        $check_brand->execute([$brand_name]);
-                        $brand_row = $check_brand->fetch(PDO::FETCH_ASSOC);
-
-                        if ($brand_row) {
-                            $brand_id = $brand_row['id'];
-                        } else {
-                            $insert_brand = $pdo->prepare("INSERT INTO brands (brand_name) VALUES (?)");
-                            $insert_brand->execute([$brand_name]);
-                            $brand_id = $pdo->lastInsertId();
-                        }
-
-                        // Link part with brand
-                        $link_sql = "INSERT INTO spare_part_brands (spare_part_id, brand_id, price) VALUES (?, ?, ?)";
-                        $link_stmt = $pdo->prepare($link_sql);
-                        $link_stmt->execute([$part_id, $brand_id, $brand_price]);
-                    }
-                }
+        $brands_data = [];
+        foreach ($_POST['brands'] ?? [] as $bd) {
+            if (!empty($bd['name'])) {
+                $brands_data[] = [
+                    'brand_name' => trim($bd['name']),
+                    'price'      => !empty($bd['price']) ? (float)$bd['price'] : null,
+                ];
             }
-
-            $message = "Spare part added successfully! ID: " . $part_id;
-            $message_type = 'success';
-        } else {
-            $message = "Error adding spare part.";
-            $message_type = 'danger';
         }
+
+        $newId = $firebase->addDoc('spare_parts', [
+            'part_name'   => $part_name,
+            'category'    => $category,
+            'description' => $description,
+            'price_min'   => $price_min,
+            'price_max'   => $price_max,
+            'image_path'  => $image_path,
+            'status'      => $status,
+            'brands'      => $brands_data,
+            'created_at'  => gmdate('Y-m-d\TH:i:s\Z'),
+        ]);
+
+        $message      = $newId ? "Spare part added successfully!" : "Error adding spare part.";
+        $message_type = $newId ? 'success' : 'danger';
     }
-    
+
     header("Location: " . $_SERVER['PHP_SELF'] . "?msg=" . urlencode($message) . "&type=" . $message_type);
     exit();
 }
 
 // UPDATE SPARE PART
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_part'])) {
-    $part_id = intval($_POST['part_id']);
-    $part_name = trim($_POST['part_name']);
-    $category = trim($_POST['category']);
+    $part_id     = trim($_POST['part_id']);
+    $part_name   = trim($_POST['part_name']);
+    $category    = trim($_POST['category']);
     $description = trim($_POST['description'] ?? '');
-    $price_min = !empty($_POST['price_min']) ? floatval($_POST['price_min']) : null;
-    $price_max = !empty($_POST['price_max']) ? floatval($_POST['price_max']) : null;
-    $status = $_POST['status'];
-    
-    // Handle image upload
-    $image_path = $_POST['existing_image'] ?? '';
+    $price_min   = !empty($_POST['price_min']) ? (float)$_POST['price_min'] : null;
+    $price_max   = !empty($_POST['price_max']) ? (float)$_POST['price_max'] : null;
+    $status      = $_POST['status'];
+    $image_path  = trim($_POST['existing_image'] ?? '');
+
     if (isset($_FILES['part_image']) && $_FILES['part_image']['error'] == 0) {
         $allowed = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
-        $filename = $_FILES['part_image']['name'];
-        $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
-        
+        $ext     = strtolower(pathinfo($_FILES['part_image']['name'], PATHINFO_EXTENSION));
         if (in_array($ext, $allowed)) {
-            $new_filename = time() . '_' . preg_replace('/[^a-zA-Z0-9]/', '_', $part_name) . '.' . $ext;
-            $upload_path = 'uploads/spare_parts/' . $new_filename;
-            
-            if (move_uploaded_file($_FILES['part_image']['tmp_name'], $upload_path)) {
-                if (!empty($image_path) && file_exists($image_path)) {
-                    unlink($image_path);
-                }
-                $image_path = $upload_path;
+            $storagePath = 'spare_parts/' . time() . '_' . preg_replace('/[^a-zA-Z0-9]/', '_', $part_name) . '.' . $ext;
+            $uploaded    = $firebase->uploadFile($_FILES['part_image']['tmp_name'], $storagePath, $_FILES['part_image']['type']);
+            if ($uploaded) {
+                if (!empty($image_path)) $firebase->deleteFile($image_path);
+                $image_path = $storagePath;
             }
         }
     }
-    
-    $update_sql = "UPDATE spare_parts SET part_name = ?, category = ?, description = ?, price_min = ?, price_max = ?, image_path = ?, status = ? WHERE id = ?";
-    $update_stmt = $pdo->prepare($update_sql);
 
-    if ($update_stmt->execute([$part_name, $category, $description, $price_min, $price_max, $image_path, $status, $part_id])) {
-        // Update brands
-        if (isset($_POST['brands']) && is_array($_POST['brands'])) {
-            // First, delete existing brand links
-            $delete_links = $pdo->prepare("DELETE FROM spare_part_brands WHERE spare_part_id = ?");
-            $delete_links->execute([$part_id]);
-
-            // Then add updated brands
-            foreach ($_POST['brands'] as $brand_data) {
-                if (!empty($brand_data['name'])) {
-                    $brand_name = trim($brand_data['name']);
-                    $brand_price = !empty($brand_data['price']) ? floatval($brand_data['price']) : null;
-
-                    // Check if brand exists
-                    $check_brand = $pdo->prepare("SELECT id FROM brands WHERE brand_name = ?");
-                    $check_brand->execute([$brand_name]);
-                    $brand_row = $check_brand->fetch(PDO::FETCH_ASSOC);
-
-                    if ($brand_row) {
-                        $brand_id = $brand_row['id'];
-                    } else {
-                        $insert_brand = $pdo->prepare("INSERT INTO brands (brand_name) VALUES (?)");
-                        $insert_brand->execute([$brand_name]);
-                        $brand_id = $pdo->lastInsertId();
-                    }
-
-                    // Link part with brand
-                    $link_sql = "INSERT INTO spare_part_brands (spare_part_id, brand_id, price) VALUES (?, ?, ?)";
-                    $link_stmt = $pdo->prepare($link_sql);
-                    $link_stmt->execute([$part_id, $brand_id, $brand_price]);
-                }
-            }
+    $brands_data = [];
+    foreach ($_POST['brands'] ?? [] as $bd) {
+        if (!empty($bd['name'])) {
+            $brands_data[] = [
+                'brand_name' => trim($bd['name']),
+                'price'      => !empty($bd['price']) ? (float)$bd['price'] : null,
+            ];
         }
-
-        $message = "Spare part updated successfully!";
-        $message_type = 'success';
-    } else {
-        $message = "Error updating spare part.";
-        $message_type = 'danger';
     }
-    
+
+    $ok = $firebase->updateDoc('spare_parts', $part_id, [
+        'part_name'   => $part_name,
+        'category'    => $category,
+        'description' => $description,
+        'price_min'   => $price_min,
+        'price_max'   => $price_max,
+        'image_path'  => $image_path,
+        'status'      => $status,
+        'brands'      => $brands_data,
+    ]);
+
+    $message      = $ok ? "Spare part updated successfully!" : "Error updating spare part.";
+    $message_type = $ok ? 'success' : 'danger';
+
     header("Location: " . $_SERVER['PHP_SELF'] . "?msg=" . urlencode($message) . "&type=" . $message_type);
     exit();
 }
 
 // DELETE SPARE PART
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_part'])) {
-    $part_id = intval($_POST['part_id']);
-    
-    // Delete related records first
-    $delete_links = $pdo->prepare("DELETE FROM spare_part_brands WHERE spare_part_id = ?");
-    $delete_links->execute([$part_id]);
-
-    // Get image path to delete
-    $img_sql = "SELECT image_path FROM spare_parts WHERE id = ?";
-    $img_stmt = $pdo->prepare($img_sql);
-    $img_stmt->execute([$part_id]);
-    $img_row = $img_stmt->fetch(PDO::FETCH_ASSOC);
-    if ($img_row) {
-        if (!empty($img_row['image_path']) && file_exists($img_row['image_path'])) {
-            unlink($img_row['image_path']);
-        }
+    $part_id  = trim($_POST['part_id']);
+    $existing = $firebase->getDoc('spare_parts', $part_id);
+    if ($existing && !empty($existing['image_path'])) {
+        $firebase->deleteFile($existing['image_path']);
     }
+    $ok           = $firebase->deleteDoc('spare_parts', $part_id);
+    $message      = $ok ? "Spare part deleted successfully!" : "Error deleting spare part.";
+    $message_type = $ok ? 'success' : 'danger';
 
-    // Delete the spare part
-    $delete_sql = "DELETE FROM spare_parts WHERE id = ?";
-    $delete_stmt = $pdo->prepare($delete_sql);
-
-    if ($delete_stmt->execute([$part_id])) {
-        $message = "Spare part deleted successfully!";
-        $message_type = 'success';
-    } else {
-        $message = "Error deleting spare part.";
-        $message_type = 'danger';
-    }
-    
     header("Location: " . $_SERVER['PHP_SELF'] . "?msg=" . urlencode($message) . "&type=" . $message_type);
     exit();
 }
 
 // Check for messages from redirect
 if (isset($_GET['msg'])) {
-    $message = urldecode($_GET['msg']);
+    $message      = urldecode($_GET['msg']);
     $message_type = $_GET['type'] ?? 'info';
 }
 
 // Get filter parameters
-$search = isset($_GET['search']) ? trim($_GET['search']) : '';
-$category_filter = isset($_GET['category']) ? trim($_GET['category']) : '';
+$search          = trim($_GET['search'] ?? '');
+$category_filter = trim($_GET['category'] ?? '');
 
-// FETCH ALL SPARE PARTS with filters
-$spare_parts = [];
-$sql = "SELECT * FROM spare_parts WHERE 1=1";
-$params = [];
-$types = "";
+// FETCH ALL SPARE PARTS (filter in PHP — avoids composite Firestore indexes)
+$allParts      = $firebase->query('spare_parts', [], 'part_name', 'ASCENDING');
+$spare_parts   = [];
+$allCategories = [];
 
-if (!empty($search)) {
-    $sql .= " AND part_name LIKE ?";
-    $params[] = "%$search%";
-    $types .= "s";
-}
-if (!empty($category_filter)) {
-    $sql .= " AND category = ?";
-    $params[] = $category_filter;
-    $types .= "s";
-}
-$sql .= " ORDER BY id DESC";
+foreach ($allParts as $row) {
+    if (!empty($row['category'])) $allCategories[] = $row['category'];
 
-$stmt = $pdo->prepare($sql);
-$stmt->execute($params);
+    if (!empty($search) && stripos($row['part_name'], $search) === false) continue;
+    if (!empty($category_filter) && ($row['category'] ?? '') !== $category_filter) continue;
 
-$rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-foreach ($rows as $row) {
-    // Get brands for this part
-    $brands_sql = "SELECT b.brand_name, spb.price
-                   FROM spare_part_brands spb
-                   JOIN brands b ON spb.brand_id = b.id
-                   WHERE spb.spare_part_id = ?";
-    $brands_stmt = $pdo->prepare($brands_sql);
-    $brands_stmt->execute([$row['id']]);
-    $brands = [];
-    $prices = [];
-    while ($brand_row = $brands_stmt->fetch(PDO::FETCH_ASSOC)) {
-        $brands[] = $brand_row['brand_name'];
-        $prices[] = $brand_row['price'];
+    $part_brands  = $row['brands'] ?? [];
+    $brands_arr   = array_column($part_brands, 'brand_name');
+    $brand_prices = array_filter(array_column($part_brands, 'price'), fn($p) => $p !== null);
+
+    $row['brands_array']      = $brands_arr;
+    $row['brand_prices']      = array_values($brand_prices);
+    $row['display_price_min'] = $row['price_min'] ?? null;
+    $row['display_price_max'] = $row['price_max'] ?? null;
+
+    if (empty($row['display_price_min']) && !empty($brand_prices)) {
+        $row['display_price_min'] = min($brand_prices);
+        $row['display_price_max'] = max($brand_prices);
     }
 
-    $row['brands_array'] = $brands;
-    $row['brand_prices'] = $prices;
-    $row['display_price_min'] = $row['price_min'];
-    $row['display_price_max'] = $row['price_max'];
-
-    // If no price range set, use brand prices
-    if (empty($row['display_price_min']) && !empty($prices)) {
-        $row['display_price_min'] = min($prices);
-        $row['display_price_max'] = max($prices);
-    }
+    $row['image_url'] = !empty($row['image_path']) ? $firebase->storageUrl($row['image_path']) : '';
 
     $spare_parts[] = $row;
 }
 
-// Get categories for filter
-$categories = [];
-$cat_sql = "SELECT * FROM spare_parts_categories WHERE is_active = 1 ORDER BY category_name";
-$cat_result = $pdo->query($cat_sql);
-$categories = $cat_result->fetchAll(PDO::FETCH_ASSOC);
+$allCategories = array_unique($allCategories);
+sort($allCategories);
+$categories = $allCategories;
 
 $hour = date('G');
 ?>
@@ -809,8 +692,8 @@ $hour = date('G');
                     <select name="category" class="form-select">
                         <option value="">All Categories</option>
                         <?php foreach ($categories as $cat): ?>
-                            <option value="<?php echo $cat['category_name']; ?>" <?php echo $category_filter == $cat['category_name'] ? 'selected' : ''; ?>>
-                                <?php echo $cat['category_name']; ?>
+                            <option value="<?php echo htmlspecialchars($cat); ?>" <?php echo $category_filter === $cat ? 'selected' : ''; ?>>
+                                <?php echo htmlspecialchars($cat); ?>
                             </option>
                         <?php endforeach; ?>
                     </select>
@@ -855,8 +738,8 @@ $hour = date('G');
                                 <tr>
                                   
                                     <td>
-                                        <?php if (!empty($part['image_path']) && file_exists($part['image_path'])): ?>
-                                            <img src="<?php echo $part['image_path']; ?>" class="part-image" alt="<?php echo htmlspecialchars($part['part_name']); ?>">
+                                        <?php if (!empty($part['image_url'])): ?>
+                                            <img src="<?php echo htmlspecialchars($part['image_url']); ?>" class="part-image" alt="<?php echo htmlspecialchars($part['part_name']); ?>">
                                         <?php else: ?>
                                             <div class="bg-light d-flex align-items-center justify-content-center" style="width: 50px; height: 50px; border-radius: 8px;">
                                                 <i class="bi bi-image text-muted" style="font-size: 1.5rem;"></i>
@@ -900,7 +783,7 @@ $hour = date('G');
                                         <button class="btn-action btn-edit" onclick='editPart(<?php echo htmlspecialchars(json_encode($part), ENT_QUOTES, 'UTF-8'); ?>)' data-bs-toggle="modal" data-bs-target="#editPartModal" title="Edit">
                                             <i class="bi bi-pencil"></i>
                                         </button>
-                                        <button class="btn-action btn-delete" onclick="deletePart(<?php echo $part['id']; ?>, '<?php echo htmlspecialchars($part['part_name']); ?>')" data-bs-toggle="modal" data-bs-target="#deletePartModal" title="Delete">
+                                        <button class="btn-action btn-delete" onclick="deletePart('<?php echo $part['id']; ?>', '<?php echo htmlspecialchars($part['part_name']); ?>')" data-bs-toggle="modal" data-bs-target="#deletePartModal" title="Delete">
                                             <i class="bi bi-trash"></i>
                                         </button>
                                        </div>
@@ -937,7 +820,7 @@ $hour = date('G');
                             <select name="category" class="form-select" id="categorySelect">
                                 <option value="">Select Category</option>
                                 <?php foreach ($categories as $cat): ?>
-                                    <option value="<?php echo $cat['category_name']; ?>"><?php echo $cat['category_name']; ?></option>
+                                    <option value="<?php echo htmlspecialchars($cat); ?>"><?php echo htmlspecialchars($cat); ?></option>
                                 <?php endforeach; ?>
                                 <option value="other">+ Add New Category</option>
                             </select>
@@ -1012,7 +895,7 @@ $hour = date('G');
                             <select name="category" id="edit_category" class="form-select">
                                 <option value="">Select Category</option>
                                 <?php foreach ($categories as $cat): ?>
-                                    <option value="<?php echo $cat['category_name']; ?>"><?php echo $cat['category_name']; ?></option>
+                                    <option value="<?php echo htmlspecialchars($cat); ?>"><?php echo htmlspecialchars($cat); ?></option>
                                 <?php endforeach; ?>
                             </select>
                         </div>
@@ -1156,9 +1039,9 @@ function editPart(part) {
     document.getElementById('edit_price_max').value = part.price_max || '';
     document.getElementById('edit_status').value = part.status;
     document.getElementById('edit_existing_image').value = part.image_path || '';
-    
-    if (part.image_path && part.image_path !== '') {
-        document.getElementById('edit_image_preview').innerHTML = `<img src="${part.image_path}" style="width: 80px; height: 80px; object-fit: cover; border-radius: 10px;">`;
+
+    if (part.image_url && part.image_url !== '') {
+        document.getElementById('edit_image_preview').innerHTML = `<img src="${part.image_url}" style="width: 80px; height: 80px; object-fit: cover; border-radius: 10px;">`;
     } else {
         document.getElementById('edit_image_preview').innerHTML = '';
     }

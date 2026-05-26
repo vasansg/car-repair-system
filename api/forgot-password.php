@@ -67,20 +67,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $step === 1) {
     if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $error = "Enter a valid email address.";
     } else {
-        $stmt = $pdo->prepare("SELECT id, full_name FROM users WHERE email=? AND is_active=1");
-        $stmt->execute([$email]);
-        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+        $users = $firebase->query('users', [
+            ['email',     '==', $email],
+            ['is_active', '==', true],
+        ]);
+        $user = $users[0] ?? null;
 
         if (!$user) {
             $error = "Email not found.";
         } else {
             $tempPassword = generateTempPassword();
-            $hash = password_hash($tempPassword, PASSWORD_DEFAULT);
-            $stmt = $pdo->prepare("
-                INSERT INTO password_resets (user_id, temp_password_hash, expires_at)
-                VALUES (?, ?, NOW() + INTERVAL '15 minutes')
-            ");
-            $stmt->execute([$user['id'], $hash]);
+            $hash         = password_hash($tempPassword, PASSWORD_DEFAULT);
+            $expiresAt    = gmdate('Y-m-d\TH:i:s\Z', time() + 900); // 15 minutes
+
+            $firebase->addDoc('password_resets', [
+                'user_id'           => $user['id'],
+                'temp_password_hash'=> $hash,
+                'expires_at'        => $expiresAt,
+                'used'              => false,
+                'created_at'        => gmdate('Y-m-d\TH:i:s\Z'),
+            ]);
 
             if (sendTempPasswordEmail($email, $user['full_name'], $tempPassword)) {
                 $_SESSION['reset_user_id'] = $user['id'];
@@ -96,15 +102,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $step === 1) {
 /* ================= STEP 2 : VERIFY TEMP PASSWORD ================= */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $step === 2) {
     $inputTemp = $_POST['temp_password'];
-    $userId = $_SESSION['reset_user_id'] ?? 0;
+    $userId    = $_SESSION['reset_user_id'] ?? '';
 
-    $stmt = $pdo->prepare("
-        SELECT * FROM password_resets
-        WHERE user_id=? AND used=0 AND expires_at > NOW()
-        ORDER BY created_at DESC LIMIT 1
-    ");
-    $stmt->execute([$userId]);
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    // Fetch all non-expired, unused resets for this user; pick the newest
+    $resets = $firebase->query('password_resets', [
+        ['user_id', '==', $userId],
+        ['used',    '==', false],
+    ], 'created_at', 'DESCENDING', 5);
+
+    $now = gmdate('Y-m-d\TH:i:s\Z');
+    $row = null;
+    foreach ($resets as $r) {
+        if (($r['expires_at'] ?? '') > $now) { $row = $r; break; }
+    }
 
     if (!$row) {
         $error = "Temporary password expired.";
@@ -127,7 +137,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $step === 3) {
         exit();
     }
 
-    $new = $_POST['new_password'];
+    $new     = $_POST['new_password'];
     $confirm = $_POST['confirm_password'];
 
     if ($new !== $confirm) {
@@ -143,11 +153,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $step === 3) {
     } else {
         $hash = password_hash($new, PASSWORD_DEFAULT);
 
-        $stmt = $pdo->prepare("UPDATE users SET password_hash=? WHERE id=?");
-        $stmt->execute([$hash, $_SESSION['reset_user_id']]);
-
-        $stmt = $pdo->prepare("UPDATE password_resets SET used=1 WHERE id=?");
-        $stmt->execute([$_SESSION['reset_id']]);
+        $firebase->updateDoc('users', $_SESSION['reset_user_id'], ['password_hash' => $hash]);
+        $firebase->updateDoc('password_resets', $_SESSION['reset_id'], ['used' => true]);
 
         session_destroy();
         header("Location: forgot-password.php?step=4");

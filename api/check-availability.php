@@ -9,26 +9,26 @@ if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
 
 require_once __DIR__ . '/includes/config.php';
 
-$date = isset($_GET['date']) ? $_GET['date'] : '';
+$date        = isset($_GET['date']) ? $_GET['date'] : '';
 $bookedSlots = [];
 
 if ($date) {
-    // Get all time slots with their max bookings
-    $slots_sql = "SELECT slot_time, max_bookings FROM booking_timeslots WHERE is_active = 1";
-    $slots_result = $pdo->query($slots_sql);
+    // Get all active time slots from Firestore
+    $slots = $firebase->query('booking_timeslots', [['is_active', '==', true]], 'slot_time', 'ASCENDING');
 
-    foreach ($slots_result->fetchAll(PDO::FETCH_ASSOC) as $slot) {
-        // Count current bookings for this time slot
-        $count_sql = "SELECT COUNT(*) as booked_count FROM bookings
-                      WHERE booking_date = ? AND booking_time = ? AND status NOT IN ('cancelled')";
-        $count_stmt = $pdo->prepare($count_sql);
-        $count_stmt->execute([$date, $slot['slot_time']]);
-        $booked_count = $count_stmt->fetch(PDO::FETCH_ASSOC)['booked_count'];
+    foreach ($slots as $slot) {
+        // Fetch all bookings for this date and time that are not cancelled
+        $bookings = $firebase->query('bookings', [
+            ['booking_date', '==', $date],
+            ['booking_time', '==', $slot['slot_time']],
+        ]);
+        // Filter out cancelled in PHP (Firestore can't do NOT IN + multiple equality without composite index)
+        $booked_count = count(array_filter($bookings, fn($b) => ($b['status'] ?? '') !== 'cancelled'));
 
         $bookedSlots[] = [
-            'time' => $slot['slot_time'],
-            'max_bookings' => $slot['max_bookings'],
-            'booked_count' => $booked_count
+            'time'         => $slot['slot_time'],
+            'max_bookings' => (int)($slot['max_bookings'] ?? 3),
+            'booked_count' => $booked_count,
         ];
     }
 }

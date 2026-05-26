@@ -31,84 +31,62 @@ $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 $category_filter = isset($_GET['category']) ? trim($_GET['category']) : '';
 $brand_filter = isset($_GET['brand']) ? trim($_GET['brand']) : '';
 
-/* ================= FETCH SPARE PARTS WITH BRANDS AND PRICES ================= */
+/* ================= FETCH SPARE PARTS FROM FIRESTORE ================= */
 $spare_parts = [];
-$sql = "SELECT * FROM spare_parts WHERE status = 'active'";
+$allParts = $firebase->query('spare_parts', [['status', '==', 'active']], 'part_name', 'ASCENDING');
 
-if (!empty($search)) {
-    $sql .= " AND (part_name LIKE '%$search%' OR description LIKE '%$search%')";
+foreach ($allParts as $row) {
+    // Apply search filter
+    if (!empty($search)) {
+        $haystack = strtolower(($row['part_name'] ?? '') . ' ' . ($row['description'] ?? ''));
+        if (strpos($haystack, strtolower($search)) === false) continue;
+    }
+    // Apply category filter
+    if (!empty($category_filter) && ($row['category'] ?? '') !== $category_filter) continue;
+
+    // Brands are stored as an embedded array in the Firestore document
+    $part_brands  = $row['brands'] ?? [];
+    $brands_arr   = array_column($part_brands, 'brand_name');
+    $brand_prices = array_column($part_brands, 'price');
+
+    // Apply brand filter
+    if (!empty($brand_filter)) {
+        $brandIdx = array_search($brand_filter, $brands_arr);
+        if ($brandIdx === false) continue;
+        $brands_arr   = [$brands_arr[$brandIdx]];
+        $brand_prices = [$brand_prices[$brandIdx]];
+    }
+
+    $display_price_min = $row['price_min'] ?? 0;
+    $display_price_max = $row['price_max'] ?? 0;
+    if (empty($display_price_min) && !empty($brand_prices)) {
+        $display_price_min = min($brand_prices);
+        $display_price_max = max($brand_prices);
+    }
+
+    $row['brands_array']       = $brands_arr;
+    $row['brand_prices']       = $brand_prices;
+    $row['display_price_min']  = $display_price_min;
+    $row['display_price_max']  = $display_price_max;
+
+    $spare_parts[] = $row;
 }
-if (!empty($category_filter)) {
-    $sql .= " AND category = '$category_filter'";
-}
 
-$sql .= " ORDER BY id DESC";
+/* ================= FETCH CATEGORIES & BRANDS FOR FILTER ================= */
+$all_for_filter = $firebase->query('spare_parts', [['status', '==', 'active']]);
+$cat_vals = array_filter(array_unique(array_column($all_for_filter, 'category')));
+sort($cat_vals);
+$categories = array_map(fn($c) => ['category' => $c], $cat_vals);
 
-$result = $pdo->query($sql);
-if ($result) {
-    foreach ($result->fetchAll(PDO::FETCH_ASSOC) as $row) {
-        // Get brands with prices for this part
-        $brands_sql = "SELECT b.brand_name, spb.price
-                       FROM spare_part_brands spb
-                       JOIN brands b ON spb.brand_id = b.id
-                       WHERE spb.spare_part_id = " . $row['id'];
-
-        // Apply brand filter
-        if (!empty($brand_filter)) {
-            $brands_sql .= " AND b.brand_name = '$brand_filter'";
-        }
-
-        $brands_sql .= " ORDER BY b.brand_name";
-        $brands_result = $pdo->query($brands_sql);
-        $brands = [];
-        $brand_prices = [];
-
-        foreach ($brands_result->fetchAll(PDO::FETCH_ASSOC) as $brand_row) {
-            $brands[] = $brand_row['brand_name'];
-            $brand_prices[] = $brand_row['price'];
-        }
-        
-        // Skip if brand filter doesn't match
-        if (!empty($brand_filter) && empty($brands)) {
-            continue;
-        }
-        
-        $row['brands_array'] = $brands;
-        $row['brand_prices'] = $brand_prices;
-        
-        // Calculate price range from brand prices
-        $display_price_min = $row['price_min'];
-        $display_price_max = $row['price_max'];
-        
-        // If no price range set, use brand prices
-        if (empty($display_price_min) && !empty($brand_prices)) {
-            $display_price_min = min($brand_prices);
-            $display_price_max = max($brand_prices);
-        }
-        
-        $row['display_price_min'] = $display_price_min;
-        $row['display_price_max'] = $display_price_max;
-        
-        $spare_parts[] = $row;
+$brand_vals = [];
+foreach ($all_for_filter as $p) {
+    foreach (($p['brands'] ?? []) as $b) {
+        if (!empty($b['brand_name'])) $brand_vals[] = $b['brand_name'];
     }
 }
-
-/* ================= FETCH CATEGORIES FOR FILTER ================= */
-$categories = [];
-$cat_sql = "SELECT DISTINCT category FROM spare_parts WHERE category IS NOT NULL AND category != '' AND status = 'active' ORDER BY category";
-$cat_result = $pdo->query($cat_sql);
-$categories = $cat_result->fetchAll(PDO::FETCH_ASSOC);
-
-/* ================= FETCH BRANDS FOR FILTER ================= */
-$brands = [];
-$brand_sql = "SELECT DISTINCT b.brand_name 
-              FROM brands b
-              JOIN spare_part_brands spb ON b.id = spb.brand_id
-              JOIN spare_parts sp ON spb.spare_part_id = sp.id
-              WHERE sp.status = 'active'
-              ORDER BY b.brand_name";
-$brand_result = $pdo->query($brand_sql);
-$brands = $brand_result->fetchAll(PDO::FETCH_ASSOC);
+$brand_vals = array_values(array_unique($brand_vals));
+sort($brand_vals);
+$brands = array_map(fn($b) => ['brand_name' => $b], $brand_vals);
 
 // Get current date for greeting
 $hour = date('G');

@@ -4,59 +4,46 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-// Load .env file for local development
-$envFile = __DIR__ . '/../.env';
-if (file_exists($envFile)) {
-    $lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-    foreach ($lines as $line) {
-        if (strpos(trim($line), '#') === 0) continue;
-        if (strpos($line, '=') !== false) {
+// Load .env from the api/ folder or the project root
+foreach ([__DIR__ . '/../.env', __DIR__ . '/../../.env'] as $envFile) {
+    if (file_exists($envFile)) {
+        foreach (file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+            if (str_starts_with(trim($line), '#') || !str_contains($line, '=')) continue;
             [$key, $value] = explode('=', $line, 2);
-            $key = trim($key);
+            $key   = trim($key);
             $value = trim($value, " \t\n\r\0\x0B\"'");
             if (!array_key_exists($key, $_ENV)) {
                 putenv("$key=$value");
                 $_ENV[$key] = $value;
             }
         }
+        break;
     }
 }
 
-// Build DSN — supports Railway's MYSQL_PUBLIC_URL or individual DB_* vars
-$mysql_url = getenv('MYSQL_PUBLIC_URL') ?: getenv('MYSQL_URL') ?: getenv('DATABASE_URL');
-if ($mysql_url) {
-    $p = parse_url($mysql_url);
-    $dsn = sprintf(
-        'mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',
-        $p['host'],
-        $p['port'] ?? 3306,
-        ltrim($p['path'], '/')
-    );
-    $db_user = $p['user'];
-    $db_pass = $p['pass'];
-} else {
-    $dsn = sprintf(
-        'mysql:host=%s;port=%s;dbname=%s;charset=utf8mb4',
-        getenv('DB_HOST') ?: '127.0.0.1',
-        getenv('DB_PORT') ?: '3306',
-        getenv('DB_NAME') ?: 'car_repair_db'
-    );
-    $db_user = getenv('DB_USER') ?: 'root';
-    $db_pass = getenv('DB_PASS') ?: '';
+require_once __DIR__ . '/FirebaseService.php';
+
+$serviceAccountPath = getenv('FIREBASE_SERVICE_ACCOUNT')
+    ?: __DIR__ . '/../../firebase-service-account.json';
+
+if (!file_exists($serviceAccountPath)) {
+    http_response_code(500);
+    die(json_encode([
+        'error' => true,
+        'message' => 'Firebase service account file not found. Place firebase-service-account.json in the project root or set FIREBASE_SERVICE_ACCOUNT in .env',
+    ]));
 }
 
 try {
-    $pdo = new PDO($dsn, $db_user, $db_pass, [
-        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        PDO::ATTR_EMULATE_PREPARES   => false,
-        PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT => false,
-    ]);
-} catch (PDOException $e) {
+    $firebase = new FirebaseService($serviceAccountPath);
+} catch (\Throwable $e) {
     http_response_code(500);
-    die('Database connection failed: ' . $e->getMessage());
+    die('Firebase init failed: ' . $e->getMessage());
 }
 
-define('SITE_URL', getenv('SITE_URL') ?: 'http://localhost/car-repair-system/');
-define('MAX_LOGIN_ATTEMPTS', 5);
-define('LOCKOUT_TIME', 900);
+define('SITE_URL',            getenv('SITE_URL')            ?: 'http://localhost/car-repair-system/api/');
+define('FIREBASE_API_KEY',    getenv('FIREBASE_API_KEY')    ?: 'AIzaSyB4b6VpoZbyrW-Xf309I3ihKfV2S8c6BSw');
+define('FIREBASE_PROJECT_ID', getenv('FIREBASE_PROJECT_ID') ?: 'car-repair-system-36204');
+define('FIREBASE_AUTH_DOMAIN', getenv('FIREBASE_AUTH_DOMAIN') ?: 'car-repair-system-36204.firebaseapp.com');
+define('MAX_LOGIN_ATTEMPTS',  5);
+define('LOCKOUT_TIME',        900);

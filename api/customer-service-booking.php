@@ -95,88 +95,114 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['book_service'])) {
     }
     
     if ($valid) {
-        $check_sql = "SELECT COUNT(*) as booked_count FROM bookings
-                     WHERE booking_date = ? AND booking_time = ? AND status NOT IN ('cancelled')";
-        $check_stmt = $pdo->prepare($check_sql);
-        $check_stmt->execute([$selected_date, $selected_time]);
-        $booked_count = $check_stmt->fetch(PDO::FETCH_ASSOC)['booked_count'];
+        // Count non-cancelled bookings for this slot from Firestore
+        $slotBookings = $firebase->query('bookings', [
+            ['booking_date', '==', $selected_date],
+            ['booking_time', '==', $selected_time],
+        ]);
+        $check_sql_placeholder = 'replaced'; // sentinel — actual count below
+        $booked_count_placeholder = count(array_filter($slotBookings, fn($b) => ($b['status'] ?? '') !== 'cancelled'));
+        $booked_count = $booked_count_placeholder;
 
-        $max_sql = "SELECT max_bookings FROM booking_timeslots WHERE slot_time = ? AND is_active = 1";
-        $max_stmt = $pdo->prepare($max_sql);
-        $max_stmt->execute([$selected_time]);
-        $max_bookings = $max_stmt->fetch(PDO::FETCH_ASSOC)['max_bookings'] ?? 3;
-        
+        // Get max bookings for this slot from Firestore
+        $slotDoc      = $firebase->getFirst('booking_timeslots', [
+            ['slot_time', '==', $selected_time],
+            ['is_active', '==', true],
+        ]);
+        $max_bookings = (int)($slotDoc['max_bookings'] ?? 3);
+
         if ($booked_count >= $max_bookings) {
             $error = 'This time slot is fully booked! Please choose another time.';
             $valid = false;
         }
     }
-    
+
     if ($valid) {
-        $price_sql = "SELECT base_price FROM service_categories WHERE id = ?";
-        $price_stmt = $pdo->prepare($price_sql);
-        $price_stmt->execute([$selected_service_id]);
-        $service_price = $price_stmt->fetch(PDO::FETCH_ASSOC)['base_price'] ?? 0;
+        // Get vehicle and service info for denormalization
+        $vehicle = $firebase->getDoc('vehicles', (string)$selected_vehicle_id);
+        $service = $firebase->getDoc('service_categories', (string)$selected_service_id);
+        $userDoc = $firebase->getDoc('users', $user_id);
 
-        $insert_sql = "INSERT INTO bookings (user_id, vehicle_id, service_category_id, booking_date, booking_time, remarks, estimated_price)
-                      VALUES (?, ?, ?, ?, ?, ?, ?)";
-        $insert_stmt = $pdo->prepare($insert_sql);
+        $now = gmdate('Y-m-d\TH:i:s\Z');
+        $newBookingId = $firebase->addDoc('bookings', [
+            'user_id'              => $user_id,
+            'user_name'            => $full_name,
+            'user_email'           => $email,
+            'vehicle_id'           => (string)$selected_vehicle_id,
+            'vehicle_brand'        => $vehicle['brand_name']   ?? '',
+            'vehicle_model'        => $vehicle['model']        ?? '',
+            'vehicle_year'         => $vehicle['year']         ?? '',
+            'vehicle_color'        => $vehicle['color']        ?? '',
+            'vehicle_plate'        => $vehicle['number_plate'] ?? '',
+            'service_category_id'  => (string)$selected_service_id,
+            'service_category_name'=> $service['category_name'] ?? '',
+            'service_type'         => $service['type']          ?? '',
+            'estimated_hours'      => $service['estimated_hours'] ?? 0,
+            'booking_date'         => $selected_date,
+            'booking_time'         => $selected_time,
+            'remarks'              => $remarks,
+            'estimated_price'      => (float)($service['base_price'] ?? 0),
+            'final_price'          => 0.0,
+            'status'               => 'pending',
+            'admin_viewed'         => false,
+            'created_at'           => $now,
+            'updated_at'           => $now,
+        ]);
 
-        if ($insert_stmt->execute([$user_id, $selected_vehicle_id, $selected_service_id,
-                                   $selected_date, $selected_time, $remarks, $service_price])) {
-            $booking_id = $pdo->lastInsertId();
-            $success = "Service booked successfully! Your booking ID is: #" . str_pad($booking_id, 6, '0', STR_PAD_LEFT);
-
-            // FIX: Clear form data and redirect to prevent duplicate submission on refresh
+        if ($newBookingId) {
+            $success = "Service booked successfully! Your booking ID is: #" . substr($newBookingId, -6);
             $_SESSION['booking_success'] = $success;
-            $_SESSION['booking_id'] = $booking_id;
-
-            // Redirect to the same page with a GET request
+            $_SESSION['booking_id']      = $newBookingId;
             header("Location: " . strtok($_SERVER["REQUEST_URI"], '?'));
             exit();
-
         } else {
             $error = 'Error creating booking.';
         }
     }
 }
 
-/* ================= FETCH DATA ================= */
-$vehicles = [];
-$vehicles_sql = "SELECT * FROM vehicles WHERE user_id = ? ORDER BY brand_name, model";
-$vehicles_stmt = $pdo->prepare($vehicles_sql);
-$vehicles_stmt->execute([$user_id]);
-$vehicles = $vehicles_stmt->fetchAll(PDO::FETCH_ASSOC);
+/* ================= FETCH DATA FROM FIRESTORE ================= */
+$vehicles = $firebase->query('vehicles', [['user_id', '==', $user_id]], 'brand_name', 'ASCENDING');
 
-$types_sql = "SELECT DISTINCT type FROM service_categories WHERE is_active = 1 ORDER BY type";
-$service_types = $pdo->query($types_sql)->fetchAll(PDO::FETCH_ASSOC);
+$allServices    = $firebase->query('service_categories', [['is_active', '==', true]], 'category_name', 'ASCENDING');
+$service_types  = array_values(array_unique(array_column($allServices, 'type')));
+sort($service_types);
+$service_types  = array_map(fn($t) => ['type' => $t], $service_types);
 
 $services_by_type = [];
-$services_sql = "SELECT * FROM service_categories WHERE is_active = 1 ORDER BY type, category_name";
-foreach ($pdo->query($services_sql)->fetchAll(PDO::FETCH_ASSOC) as $service) {
-    $services_by_type[$service['type']][] = $service;
+foreach ($allServices as $svc) {
+    $services_by_type[$svc['type']][] = $svc;
 }
 
 /* ================= FETCH SUGGESTED SERVICES ================= */
+// Get all pending suggestions for this user's vehicles
+$userVehicleIds    = array_column($vehicles, 'id');
 $suggested_services = [];
 
-$suggest_sql = "SELECT s.*, sc.category_name, sc.type, sc.base_price, sc.estimated_hours,
-                       v.brand_name, v.model, v.number_plate, v.id as vehicle_id,
-                       s.suggested_date - CURRENT_DATE as days_until_due
-                FROM service_suggestions s
-                JOIN service_categories sc ON s.service_category_id = sc.id
-                JOIN vehicles v ON s.vehicle_id = v.id
-                WHERE v.user_id = ?
-                AND s.status = 'pending'
-                ORDER BY v.id, s.suggested_date ASC";
+if (!empty($userVehicleIds)) {
+    $allSuggestions = $firebase->query('service_suggestions', [['user_id', '==', $user_id]], 'suggested_date', 'ASCENDING');
+    foreach ($allSuggestions as $s) {
+        if (($s['status'] ?? '') !== 'pending') continue;
+        // Attach service and vehicle info
+        $svc = $firebase->getDoc('service_categories', $s['service_category_id'] ?? '');
+        $veh = $firebase->getDoc('vehicles',           $s['vehicle_id']          ?? '');
+        $today = date('Y-m-d');
+        $due   = substr($s['suggested_date'] ?? $today, 0, 10);
+        $suggested_services[] = array_merge($s, [
+            'category_name'  => $svc['category_name']  ?? '',
+            'type'           => $svc['type']            ?? '',
+            'base_price'     => $svc['base_price']      ?? 0,
+            'estimated_hours'=> $svc['estimated_hours'] ?? 0,
+            'brand_name'     => $veh['brand_name']      ?? '',
+            'model'          => $veh['model']           ?? '',
+            'number_plate'   => $veh['number_plate']    ?? '',
+            'vehicle_id'     => $s['vehicle_id']        ?? '',
+            'days_until_due' => (int)floor((strtotime($due) - strtotime($today)) / 86400),
+        ]);
+    }
+}
 
-$suggest_stmt = $pdo->prepare($suggest_sql);
-$suggest_stmt->execute([$user_id]);
-$suggested_services = $suggest_stmt->fetchAll(PDO::FETCH_ASSOC);
-
-$time_slots = [];
-$slots_sql = "SELECT slot_time FROM booking_timeslots WHERE is_active = 1 ORDER BY slot_time";
-$time_slots = $pdo->query($slots_sql)->fetchAll(PDO::FETCH_ASSOC);
+$time_slots = $firebase->query('booking_timeslots', [['is_active', '==', true]], 'slot_time', 'ASCENDING');
 ?>
 
 <!DOCTYPE html>

@@ -13,53 +13,40 @@ $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     $username = trim($_POST['username']);
-    
-    // First, check if the users table exists
-    $table_check = $pdo->query("SELECT 1 FROM information_schema.tables WHERE table_name = 'users' AND table_schema = DATABASE()");
-    if (!$table_check->fetch()) {
-        $error = "Database not properly set up. Please run the installation script.";
-    } else {
-        // Check if username exists and get role
-        $sql = "SELECT id, email, full_name, security_image_path, security_phrase, role FROM users WHERE username = ? AND is_active = 1";
-        $stmt = $pdo->prepare($sql);
 
-        if ($stmt === false) {
-            $error = "Database error: ";
+    // Look up user by username in Firestore
+    $users = $firebase->query('users', [
+        ['username', '==', $username],
+        ['is_active', '==', true],
+    ]);
+    $user = $users[0] ?? null;
+
+    if ($user) {
+        if ($user['role'] === 'admin') {
+            $_SESSION['admin_login_user'] = [
+                'user_id'   => $user['id'],
+                'username'  => $username,
+                'email'     => $user['email'],
+                'full_name' => $user['full_name'],
+                'role'      => 'admin',
+            ];
+            header('Location: admin-login.php');
+            exit();
         } else {
-            $stmt->execute([$username]);
-            $user = $stmt->fetch(PDO::FETCH_ASSOC);
-
-            if ($user) {
-                // Check user role
-                if ($user['role'] == 'admin') {
-                    // Redirect admin to admin login page
-                    $_SESSION['admin_login_user'] = [
-                        'user_id' => $user['id'],
-                        'username' => $username,
-                        'email' => $user['email'],
-                        'full_name' => $user['full_name'],
-                        'role' => 'admin'
-                    ];
-                    header('Location: admin-login.php');
-                    exit();
-                } else {
-                    // For customers/staff, go to verification page
-                    $_SESSION['login_user'] = [
-                        'user_id' => $user['id'],
-                        'username' => $username,
-                        'email' => $user['email'],
-                        'full_name' => $user['full_name'],
-                        'security_image' => $user['security_image_path'],
-                        'security_phrase' => $user['security_phrase'],
-                        'role' => $user['role']
-                    ];
-                    header('Location: verify-security.php');
-                    exit();
-                }
-            } else {
-                $error = "Username not found or account is inactive!";
-            }
+            $_SESSION['login_user'] = [
+                'user_id'        => $user['id'],
+                'username'       => $username,
+                'email'          => $user['email'],
+                'full_name'      => $user['full_name'],
+                'security_image' => $user['security_image_path'] ?? '',
+                'security_phrase'=> $user['security_phrase'] ?? '',
+                'role'           => $user['role'],
+            ];
+            header('Location: verify-security.php');
+            exit();
         }
+    } else {
+        $error = "Username not found or account is inactive!";
     }
 }
 

@@ -49,14 +49,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_vehicle'])) {
     } elseif ($year < 1000 || $year > date('Y') + 1) {
         $error = 'Please enter a valid year!';
     } else {
-        $sql = "INSERT INTO vehicles (user_id, brand_name, model, year, color, number_plate) VALUES (?, ?, ?, ?, ?, ?)";
-        $stmt = $pdo->prepare($sql);
+        $newVehicleId = $firebase->addDoc('vehicles', [
+            'user_id'      => $user_id,
+            'brand_name'   => $brand_name,
+            'model'        => $model,
+            'year'         => (int)$year,
+            'color'        => $color,
+            'number_plate' => $number_plate,
+            'created_at'   => gmdate('Y-m-d\TH:i:s\Z'),
+        ]);
 
-        if ($stmt->execute([$user_id, $brand_name, $model, $year, $color, $number_plate])) {
-            // Store success message in session
+        if ($newVehicleId) {
             $_SESSION['vehicle_added'] = 'Vehicle added successfully!';
-
-            // Redirect to prevent resubmission on refresh
             header("Location: " . strtok($_SERVER["REQUEST_URI"], '?'));
             exit();
         } else {
@@ -66,11 +70,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_vehicle'])) {
 }
 
 /* ================= FETCH VEHICLES ================= */
-$vehicles = array();
-$sql = "SELECT * FROM vehicles WHERE user_id = ? ORDER BY created_at DESC";
-$stmt = $pdo->prepare($sql);
-$stmt->execute([$user_id]);
-$vehicles = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$vehicles      = $firebase->query('vehicles', [['user_id', '==', $user_id]], 'created_at', 'DESCENDING');
 $vehicle_count = count($vehicles);
 
 $hour = date('G');

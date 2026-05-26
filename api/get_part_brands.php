@@ -9,22 +9,18 @@ if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
 
 require_once __DIR__ . '/includes/config.php';
 
-$part_id = isset($_GET['part_id']) ? intval($_GET['part_id']) : 0;
+$part_id = trim($_GET['part_id'] ?? '');
 
 $brands = [];
-if ($part_id > 0) {
-    $sql = "SELECT b.brand_name, spb.price 
-            FROM spare_part_brands spb
-            JOIN brands b ON spb.brand_id = b.id
-            WHERE spb.spare_part_id = ?";
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute([$part_id]);
-
-    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-        $brands[] = [
-            'name' => $row['brand_name'],
-            'price' => $row['price']
-        ];
+if (!empty($part_id)) {
+    $part = $firebase->getDoc('spare_parts', $part_id);
+    if ($part) {
+        foreach ($part['brands'] ?? [] as $brand) {
+            $brands[] = [
+                'name'  => $brand['brand_name'] ?? '',
+                'price' => $brand['price'] ?? null,
+            ];
+        }
     }
 }
 

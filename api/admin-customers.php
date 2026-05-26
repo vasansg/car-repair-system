@@ -25,16 +25,16 @@ $first_name = explode(' ', $full_name)[0];
 /* ================= DATABASE CONNECTION ================= */
 require_once __DIR__ . '/includes/config.php';
 
-/* ================= FETCH ALL CUSTOMERS ================= */
-$sql = "SELECT u.*,
-        (SELECT COUNT(*) FROM vehicles WHERE user_id = u.id) as vehicle_count,
-        (SELECT MAX(created_at) FROM vehicles WHERE user_id = u.id) as last_vehicle_added
-        FROM users u
-        WHERE u.role = 'customer' OR u.role IS NULL OR u.role = ''
-        ORDER BY u.created_at DESC";
+/* ================= FETCH ALL CUSTOMERS FROM FIRESTORE ================= */
+$customers = $firebase->query('users', [['role', '==', 'customer']], 'created_at', 'DESCENDING');
 
-$result = $pdo->query($sql);
-$customers = $result->fetchAll(PDO::FETCH_ASSOC);
+// Add vehicle_count to each customer (denormalized lookup)
+foreach ($customers as &$cust) {
+    $vehs = $firebase->query('vehicles', [['user_id', '==', $cust['id']]]);
+    $cust['vehicle_count']      = count($vehs);
+    $cust['last_vehicle_added'] = !empty($vehs) ? max(array_column($vehs, 'created_at')) : null;
+}
+unset($cust);
 
 $hour = date('G');
 if ($hour >= 5 && $hour < 12) {

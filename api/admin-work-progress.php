@@ -18,198 +18,187 @@ if ($_SESSION['role'] !== 'admin') {
 }
 
 /* ================= USER DATA ================= */
-$full_name = $_SESSION['full_name'];
-$email = $_SESSION['email'];
+$full_name  = $_SESSION['full_name'];
+$email      = $_SESSION['email'];
 $first_name = explode(' ', $full_name)[0];
 
 /* ================= DATABASE CONNECTION ================= */
 require_once __DIR__ . '/includes/config.php';
 
 /* ================= HANDLE ACTIONS ================= */
-$message = '';
+$message      = '';
 $message_type = '';
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (isset($_POST['action'])) {
-        $booking_id = intval($_POST['booking_id']);
-        $redirect = false;
-        
-        switch ($_POST['action']) {
-            case 'assign_technician':
-                $technician_id = intval($_POST['technician_id']);
-                
-                $check_sql = "SELECT id FROM service_progress WHERE booking_id = ?";
-                $check_stmt = $pdo->prepare($check_sql);
-                $check_stmt->execute([$booking_id]);
-                $check_rows = $check_stmt->fetchAll(PDO::FETCH_ASSOC);
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    $booking_id    = trim($_POST['booking_id']);
+    $technician_id = trim($_POST['technician_id'] ?? '');
+    $redirect      = false;
+    $now           = gmdate('Y-m-d\TH:i:s\Z');
 
-                if (count($check_rows) > 0) {
-                    $update_sql = "UPDATE service_progress SET technician_id = ? WHERE booking_id = ?";
-                    $update_stmt = $pdo->prepare($update_sql);
-                    $update_stmt->execute([$technician_id, $booking_id]);
-                } else {
-                    $insert_sql = "INSERT INTO service_progress (booking_id, technician_id, status) VALUES (?, ?, 'pending')";
-                    $insert_stmt = $pdo->prepare($insert_sql);
-                    $insert_stmt->execute([$booking_id, $technician_id]);
+    switch ($_POST['action']) {
+        case 'assign_technician':
+            $sp = $firebase->getFirst('service_progress', [['booking_id', '==', $booking_id]]);
+            if ($sp) {
+                $firebase->updateDoc('service_progress', $sp['id'], ['technician_id' => $technician_id]);
+            } else {
+                $firebase->addDoc('service_progress', [
+                    'booking_id'    => $booking_id,
+                    'technician_id' => $technician_id,
+                    'status'        => 'pending',
+                    'started_at'    => null,
+                    'completed_at'  => null,
+                    'created_at'    => $now,
+                ]);
+            }
+            $firebase->addDoc('booking_updates', [
+                'booking_id'              => $booking_id,
+                'technician_id'           => '',
+                'message'                 => 'Technician assigned',
+                'update_type'             => 'info',
+                'is_visible_to_customer'  => true,
+                'created_at'              => $now,
+            ]);
+            $_SESSION['message']      = "Technician assigned successfully!";
+            $_SESSION['message_type'] = 'success';
+            $redirect = true;
+            break;
+
+        case 'start_progress':
+            $firebase->updateDoc('bookings', $booking_id, ['status' => 'repairing', 'updated_at' => $now]);
+            $sp = $firebase->getFirst('service_progress', [['booking_id', '==', $booking_id]]);
+            if ($sp) {
+                $firebase->updateDoc('service_progress', $sp['id'], ['status' => 'in_progress', 'started_at' => $now]);
+            }
+            $firebase->addDoc('booking_updates', [
+                'booking_id'             => $booking_id,
+                'technician_id'          => $technician_id,
+                'message'                => 'Service work has started',
+                'update_type'            => 'success',
+                'is_visible_to_customer' => true,
+                'created_at'             => $now,
+            ]);
+            $_SESSION['message']      = "Service started successfully!";
+            $_SESSION['message_type'] = 'success';
+            $redirect = true;
+            break;
+
+        case 'complete_booking':
+            $firebase->updateDoc('bookings', $booking_id, [
+                'status'         => 'completed',
+                'completed_date' => gmdate('Y-m-d'),
+                'updated_at'     => $now,
+            ]);
+            $sp = $firebase->getFirst('service_progress', [['booking_id', '==', $booking_id]]);
+            if ($sp) {
+                $firebase->updateDoc('service_progress', $sp['id'], ['status' => 'completed', 'completed_at' => $now]);
+            }
+            $firebase->addDoc('booking_updates', [
+                'booking_id'             => $booking_id,
+                'technician_id'          => '',
+                'message'                => 'Service completed successfully!',
+                'update_type'            => 'success',
+                'is_visible_to_customer' => true,
+                'created_at'             => $now,
+            ]);
+            // Update matching pending suggestions to 'done'
+            $bDoc = $firebase->getDoc('bookings', $booking_id);
+            if ($bDoc) {
+                $sugs = $firebase->query('service_suggestions', [['vehicle_id', '==', $bDoc['vehicle_id'] ?? '']]);
+                foreach ($sugs as $sug) {
+                    if (($sug['service_category_id'] ?? '') === ($bDoc['service_category_id'] ?? '')
+                        && in_array($sug['status'] ?? '', ['pending', 'booked', 'in_progress'])) {
+                        $firebase->updateDoc('service_suggestions', $sug['id'], [
+                            'status'          => 'done',
+                            'completed_notes' => 'Completed on ' . date('d/m/Y') . ' (Booking #' . substr($booking_id, -6) . ')',
+                            'updated_at'      => $now,
+                        ]);
+                    }
                 }
+            }
+            $_SESSION['message']      = "Booking #" . substr($booking_id, -6) . " completed successfully!";
+            $_SESSION['message_type'] = 'success';
+            $redirect = true;
+            break;
 
-                $update_sql = "INSERT INTO service_updates (booking_id, message, update_type, is_visible_to_customer)
-                              VALUES (?, 'Technician assigned', 'info', 1)";
-                $update_stmt = $pdo->prepare($update_sql);
-                $update_stmt->execute([$booking_id]);
-
-                $_SESSION['message'] = "Technician assigned successfully!";
-                $_SESSION['message_type'] = 'success';
-                $redirect = true;
-                break;
-                
-            case 'start_progress':
-                $technician_id = intval($_POST['technician_id']);
-                
-                $booking_stmt = $pdo->prepare("UPDATE bookings SET status = 'repairing' WHERE id = ?");
-                $booking_stmt->execute([$booking_id]);
-
-                $update_progress = "UPDATE service_progress SET status = 'in_progress', started_at = NOW() WHERE booking_id = ?";
-                $update_stmt = $pdo->prepare($update_progress);
-                $update_stmt->execute([$booking_id]);
-
-                $update_sql = "INSERT INTO service_updates (booking_id, message, update_type, is_visible_to_customer)
-                              VALUES (?, 'Service work has started', 'success', 1)";
-                $update_stmt = $pdo->prepare($update_sql);
-                $update_stmt->execute([$booking_id]);
-                
-                $_SESSION['message'] = "Service started successfully!";
-                $_SESSION['message_type'] = 'success';
-                $redirect = true;
-                break;
-                
-            case 'complete_booking':
-    $update_sql = "UPDATE bookings SET status = 'completed', completed_date = CURRENT_DATE WHERE id = ?";
-    $update_stmt = $pdo->prepare($update_sql);
-    $update_stmt->execute([$booking_id]);
-
-    $update_progress = "UPDATE service_progress SET status = 'completed', completed_at = NOW() WHERE booking_id = ?";
-    $update_stmt = $pdo->prepare($update_progress);
-    $update_stmt->execute([$booking_id]);
-
-    $update_sql = "INSERT INTO service_updates (booking_id, message, update_type, is_visible_to_customer)
-                  VALUES (?, 'Service completed successfully!', 'success', 1)";
-    $update_stmt = $pdo->prepare($update_sql);
-    $update_stmt->execute([$booking_id]);
-
-    // ============ UPDATE SUGGESTION STATUS TO DONE ============
-    // Get vehicle_id and service_category_id from the booking
-    $get_booking_sql = "SELECT vehicle_id, service_category_id FROM bookings WHERE id = ?";
-    $get_booking_stmt = $pdo->prepare($get_booking_sql);
-    $get_booking_stmt->execute([$booking_id]);
-    $booking_data = $get_booking_stmt->fetch(PDO::FETCH_ASSOC);
-
-    if ($booking_data) {
-        // Update the corresponding suggestion status to 'done'
-        $update_suggestion_sql = "UPDATE service_suggestions
-                                  SET status = 'done',
-                                      completed_notes = CONCAT('Completed on ', DATE_FORMAT(NOW(), '%d/%m/%Y'), ' (Booking #', ?, ')'),
-                                      updated_at = NOW()
-                                  WHERE vehicle_id = ?
-                                  AND service_category_id = ?
-                                  AND status IN ('pending', 'booked', 'in_progress')";
-        $update_suggestion_stmt = $pdo->prepare($update_suggestion_sql);
-        $update_suggestion_stmt->execute([$booking_id, $booking_data['vehicle_id'], $booking_data['service_category_id']]);
+        case 'add_update':
+            $update_message      = trim($_POST['update_message']);
+            $update_type         = $_POST['update_type'];
+            $visible_to_customer = isset($_POST['visible_to_customer']);
+            $firebase->addDoc('booking_updates', [
+                'booking_id'             => $booking_id,
+                'technician_id'          => $technician_id,
+                'message'                => $update_message,
+                'update_type'            => $update_type,
+                'is_visible_to_customer' => $visible_to_customer,
+                'created_at'             => $now,
+            ]);
+            $_SESSION['message']      = "Update added successfully!";
+            $_SESSION['message_type'] = 'success';
+            $redirect = true;
+            break;
     }
-    // ============ END SUGGESTION UPDATE ============
 
-    $_SESSION['message'] = "Booking #" . str_pad($booking_id, 6, '0', STR_PAD_LEFT) . " completed successfully!";
-    $_SESSION['message_type'] = 'success';
-    $redirect = true;
-    break;
-                
-            case 'add_update':
-                $technician_id = intval($_POST['technician_id']);
-                $update_message = trim($_POST['update_message']);
-                $update_type = $_POST['update_type'];
-                $visible_to_customer = isset($_POST['visible_to_customer']) ? 1 : 0;
-                
-                $insert_sql = "INSERT INTO service_updates (booking_id, technician_id, message, update_type, is_visible_to_customer)
-                              VALUES (?, ?, ?, ?, ?)";
-                $insert_stmt = $pdo->prepare($insert_sql);
-                $insert_stmt->execute([$booking_id, $technician_id, $update_message, $update_type, $visible_to_customer]);
-                
-                $_SESSION['message'] = "Update added successfully!";
-                $_SESSION['message_type'] = 'success';
-                $redirect = true;
-                break;
-        }
-        
-        if ($redirect) {
-            header("Location: " . $_SERVER['PHP_SELF']);
-            exit();
-        }
+    if ($redirect) {
+        header("Location: " . $_SERVER['PHP_SELF']);
+        exit();
     }
 }
 
 if (isset($_SESSION['message'])) {
-    $message = $_SESSION['message'];
+    $message      = $_SESSION['message'];
     $message_type = $_SESSION['message_type'];
-    unset($_SESSION['message']);
-    unset($_SESSION['message_type']);
+    unset($_SESSION['message'], $_SESSION['message_type']);
 }
 
 /* ================= FETCH IN-PROGRESS BOOKINGS ================= */
-$bookings = [];
-$sql = "SELECT 
-            b.*,
-            u.full_name as customer_name,
-            u.email as customer_email,
-            u.phone as customer_phone,
-            v.brand_name,
-            v.model,
-            v.year,
-            v.color,
-            v.number_plate,
-            sc.category_name as service_name,
-            sc.id as service_category_id,
-            sc.base_price as estimated_price,
-            sp.technician_id as assigned_technician_id,
-            sp.status as progress_status,
-            sp.started_at,
-            t.name as technician_name
-        FROM bookings b
-        JOIN users u ON b.user_id = u.id
-        JOIN vehicles v ON b.vehicle_id = v.id
-        JOIN service_categories sc ON b.service_category_id = sc.id
-        LEFT JOIN service_progress sp ON b.id = sp.booking_id
-        LEFT JOIN technicians t ON sp.technician_id = t.id
-        WHERE b.status IN ('repairing')
-        ORDER BY b.booking_date ASC, b.booking_time ASC";
+$technicians = $firebase->query('technicians', [['is_active', '==', true]], 'name', 'ASCENDING');
+$techById    = array_combine(array_column($technicians, 'id'), $technicians);
 
-$result = $pdo->query($sql);
-if ($result) {
-    $bookings = $result->fetchAll(PDO::FETCH_ASSOC);
-}
+$rawBookings = $firebase->query('bookings', [['status', '==', 'repairing']], 'booking_date', 'ASCENDING');
 
-$technicians = [];
-$tech_sql = "SELECT id, name FROM technicians WHERE is_active = 1 ORDER BY name";
-$tech_result = $pdo->query($tech_sql);
-$technicians = $tech_result->fetchAll(PDO::FETCH_ASSOC);
+// Sort by date then time
+usort($rawBookings, function ($a, $b) {
+    $d = strcmp($a['booking_date'] ?? '', $b['booking_date'] ?? '');
+    return $d !== 0 ? $d : strcmp($a['booking_time'] ?? '', $b['booking_time'] ?? '');
+});
 
+$bookings           = [];
 $updates_by_booking = [];
-foreach ($bookings as $booking) {
-    $update_sql = "SELECT u.*, t.name as technician_name
-                   FROM service_updates u
-                   LEFT JOIN technicians t ON u.technician_id = t.id
-                   WHERE u.booking_id = ?
-                   ORDER BY u.created_at DESC
-                   LIMIT 10";
-    $update_stmt = $pdo->prepare($update_sql);
-    $update_stmt->execute([$booking['id']]);
-    $updates_by_booking[$booking['id']] = $update_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+foreach ($rawBookings as $booking) {
+    // Merge service_progress
+    $sp = $firebase->getFirst('service_progress', [['booking_id', '==', $booking['id']]]);
+    $booking['assigned_technician_id'] = $sp['technician_id'] ?? null;
+    $booking['progress_status']        = $sp['status'] ?? 'pending';
+    $booking['started_at']             = $sp['started_at'] ?? null;
+
+    // Fetch user phone (not denormalized in booking)
+    $uDoc = $firebase->getDoc('users', $booking['user_id'] ?? '');
+    $booking['customer_phone'] = $uDoc['phone'] ?? '';
+
+    // Map denormalized fields to template-expected names
+    $booking['customer_name']  = $booking['user_name'] ?? '';
+    $booking['customer_email'] = $booking['user_email'] ?? '';
+    $booking['brand_name']     = $booking['vehicle_brand'] ?? '';
+    $booking['model']          = $booking['vehicle_model'] ?? '';
+    $booking['year']           = $booking['vehicle_year'] ?? '';
+    $booking['number_plate']   = $booking['vehicle_plate'] ?? '';
+    $booking['service_name']   = $booking['service_category_name'] ?? '';
+
+    // Fetch last 10 updates
+    $updates = $firebase->query('booking_updates', [['booking_id', '==', $booking['id']]], 'created_at', 'DESCENDING', 10);
+    foreach ($updates as &$u) {
+        $tid             = $u['technician_id'] ?? '';
+        $u['technician_name'] = !empty($tid) ? ($techById[$tid]['name'] ?? 'System') : 'System';
+    }
+    unset($u);
+    $updates_by_booking[$booking['id']] = $updates;
+
+    $bookings[] = $booking;
 }
 
 $repairing_count = count($bookings);
-$assigned_count = 0;
-foreach ($bookings as $b) {
-    if ($b['assigned_technician_id']) $assigned_count++;
-}
+$assigned_count  = count(array_filter($bookings, fn($b) => !empty($b['assigned_technician_id'])));
 
 date_default_timezone_set('Asia/Kuala_Lumpur');
 $hour = date('G');
@@ -762,7 +751,7 @@ if ($hour >= 5 && $hour < 12) {
             ?>
                 <div class="work-card">
                     <div class="card-header">
-                        <span class="booking-id">#<?php echo str_pad($booking['id'], 6, '0', STR_PAD_LEFT); ?></span>
+                        <span class="booking-id">#<?php echo substr($booking['id'], -6); ?></span>
                         <span class="status-badge status-repairing">In Progress</span>
                     </div>
                     
@@ -823,15 +812,9 @@ if ($hour >= 5 && $hour < 12) {
                                 <div class="d-flex align-items-center justify-content-between">
                                     <div>
                                         <i class="bi bi-person-check-fill text-primary me-1"></i>
-                                        <strong>Technician:</strong> 
-                                        <?php 
-                                        $tech_name = '';
-                                        foreach ($technicians as $tech) {
-                                            if ($tech['id'] == $booking['assigned_technician_id']) {
-                                                $tech_name = $tech['name'];
-                                                break;
-                                            }
-                                        }
+                                        <strong>Technician:</strong>
+                                        <?php
+                                        $tech_name = $techById[$booking['assigned_technician_id']]['name'] ?? '';
                                         echo htmlspecialchars($tech_name);
                                         ?>
                                     </div>
@@ -910,7 +893,7 @@ if ($hour >= 5 && $hour < 12) {
                         <div class="modal-content">
                             <form method="POST">
                                 <div class="modal-header bg-primary text-white">
-                                    <h5 class="modal-title">Add Update - #<?php echo str_pad($booking['id'], 6, '0', STR_PAD_LEFT); ?></h5>
+                                    <h5 class="modal-title">Add Update - #<?php echo substr($booking['id'], -6); ?></h5>
                                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                                 </div>
                                 <div class="modal-body">

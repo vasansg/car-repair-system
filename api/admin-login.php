@@ -13,14 +13,10 @@ if (!isset($_SESSION['admin_login_user'])) {
 $admin_data = $_SESSION['admin_login_user'];
 $error = '';
 
-// Verify this is actually an admin
-$sql = "SELECT password_hash, role FROM users WHERE id = ? AND role = 'admin'";
-$stmt = $pdo->prepare($sql);
-$stmt->execute([$admin_data['user_id']]);
-$admin = $stmt->fetch(PDO::FETCH_ASSOC);
+// Verify this is actually an admin in Firestore
+$admin = $firebase->getDoc('users', $admin_data['user_id']);
 
-if (!$admin) {
-    // Not an admin, redirect to main login
+if (!$admin || ($admin['role'] ?? '') !== 'admin') {
     unset($_SESSION['admin_login_user']);
     header('Location: login.php');
     exit();

@@ -25,21 +25,14 @@ $first_name = explode(' ', $full_name)[0];
 /* ================= DATABASE CONNECTION ================= */
 require_once __DIR__ . '/includes/config.php';
 
-// Add admin_viewed column if not exists
-$pdo->query("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS admin_viewed SMALLINT DEFAULT 0");
-
 // ================= MARK BOOKING AS VIEWED =================
 if (isset($_POST['mark_booking_viewed'])) {
-    $booking_id = intval($_POST['booking_id']);
-    $update_sql = "UPDATE bookings SET admin_viewed = 1 WHERE id = ?";
-    $update_stmt = $pdo->prepare($update_sql);
-    $update_stmt->execute([$booking_id]);
+    $booking_id = trim($_POST['booking_id']);
+    $firebase->updateDoc('bookings', $booking_id, ['admin_viewed' => true]);
 
-    // Get updated unviewed count
-    $count_sql = "SELECT COUNT(*) as unviewed FROM bookings WHERE status = 'pending' AND admin_viewed = 0";
-    $count_result = $pdo->query($count_sql);
-    $unviewed = $count_result->fetch(PDO::FETCH_ASSOC)['unviewed'];
-    
+    $allB    = $firebase->query('bookings', [['status', '==', 'pending']]);
+    $unviewed = count(array_filter($allB, fn($b) => !($b['admin_viewed'] ?? false)));
+
     echo json_encode(['success' => true, 'unviewed' => $unviewed]);
     exit();
 }
@@ -47,32 +40,33 @@ if (isset($_POST['mark_booking_viewed'])) {
 // ================= AJAX ENDPOINT FOR AUTO REFRESH =================
 if (isset($_GET['check_new_bookings'])) {
     header('Content-Type: application/json');
-    
-    $last_check = isset($_GET['last_check']) ? intval($_GET['last_check']) : 0;
-    
-    // Check for new pending bookings
-    $new_sql = "SELECT COUNT(*) as new_count FROM bookings
-                WHERE status = 'pending' AND UNIX_TIMESTAMP(created_at) > ? AND admin_viewed = 0";
-    $new_stmt = $pdo->prepare($new_sql);
-    $new_stmt->execute([$last_check]);
-    $new_count = $new_stmt->fetch(PDO::FETCH_ASSOC)['new_count'];
 
-    // Get updated statistics (only pending, confirmed, repairing)
-    $stats_sql = "SELECT
-        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_count,
-        SUM(CASE WHEN status = 'confirmed' THEN 1 ELSE 0 END) as confirmed_count,
-        SUM(CASE WHEN status = 'repairing' THEN 1 ELSE 0 END) as repairing_count,
-        SUM(CASE WHEN status = 'pending' AND admin_viewed = 0 THEN 1 ELSE 0 END) as unviewed_count
-    FROM bookings";
-    $stats_result = $pdo->query($stats_sql);
-    $stats_data = $stats_result->fetch(PDO::FETCH_ASSOC);
-    
+    $last_check  = isset($_GET['last_check']) ? intval($_GET['last_check']) : 0;
+    $lastCheckTs = gmdate('Y-m-d\TH:i:s\Z', $last_check);
+
+    $allBookings = $firebase->query('bookings');
+    $new_count   = count(array_filter($allBookings, fn($b) =>
+        ($b['status'] ?? '') === 'pending' &&
+        !($b['admin_viewed'] ?? false) &&
+        ($b['created_at'] ?? '') > $lastCheckTs
+    ));
+
+    $pending_count   = count(array_filter($allBookings, fn($b) => ($b['status'] ?? '') === 'pending'));
+    $confirmed_count = count(array_filter($allBookings, fn($b) => ($b['status'] ?? '') === 'confirmed'));
+    $repairing_count = count(array_filter($allBookings, fn($b) => ($b['status'] ?? '') === 'repairing'));
+    $unviewed_count  = count(array_filter($allBookings, fn($b) => ($b['status'] ?? '') === 'pending' && !($b['admin_viewed'] ?? false)));
+
     echo json_encode([
-        'has_new' => $new_count > 0,
-        'new_count' => $new_count,
-        'unviewed_count' => $stats_data['unviewed_count'] ?? 0,
-        'stats' => $stats_data,
-        'timestamp' => time()
+        'has_new'       => $new_count > 0,
+        'new_count'     => $new_count,
+        'unviewed_count'=> $unviewed_count,
+        'stats'         => [
+            'pending_count'   => $pending_count,
+            'confirmed_count' => $confirmed_count,
+            'repairing_count' => $repairing_count,
+            'unviewed_count'  => $unviewed_count,
+        ],
+        'timestamp' => time(),
     ]);
     exit();
 }
@@ -83,86 +77,80 @@ $message_type = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['action'])) {
-        $booking_id = intval($_POST['booking_id']);
+        $booking_id   = trim($_POST['booking_id']);
         $redirect_url = "admin-bookings.php?filter=" . ($_GET['filter'] ?? 'pending') . "&order=" . ($_GET['order'] ?? 'desc');
-        
+        $now          = gmdate('Y-m-d\TH:i:s\Z');
+        $shortId      = '#' . substr($booking_id, -6);
+
         switch ($_POST['action']) {
             case 'confirm':
-                $stmt = $pdo->prepare("UPDATE bookings SET status = 'confirmed', admin_viewed = 1 WHERE id = ?");
-                if ($stmt->execute([$booking_id])) {
-                    $_SESSION['message'] = "Booking #" . str_pad($booking_id, 6, '0', STR_PAD_LEFT) . " confirmed successfully!";
-                    $_SESSION['message_type'] = 'success';
-                }
+                $firebase->updateDoc('bookings', $booking_id, ['status' => 'confirmed', 'admin_viewed' => true, 'updated_at' => $now]);
+                $_SESSION['message']      = "Booking {$shortId} confirmed successfully!";
+                $_SESSION['message_type'] = 'success';
                 break;
 
             case 'cancel':
-                $stmt = $pdo->prepare("UPDATE bookings SET status = 'cancelled', admin_viewed = 1 WHERE id = ?");
-                if ($stmt->execute([$booking_id])) {
-                    $_SESSION['message'] = "Booking #" . str_pad($booking_id, 6, '0', STR_PAD_LEFT) . " cancelled successfully!";
-                    $_SESSION['message_type'] = 'success';
-                }
+                $firebase->updateDoc('bookings', $booking_id, ['status' => 'cancelled', 'admin_viewed' => true, 'updated_at' => $now]);
+                $_SESSION['message']      = "Booking {$shortId} cancelled successfully!";
+                $_SESSION['message_type'] = 'success';
                 break;
 
             case 'start':
-                $stmt = $pdo->prepare("UPDATE bookings SET status = 'repairing', admin_viewed = 1 WHERE id = ?");
-                if ($stmt->execute([$booking_id])) {
-                    $_SESSION['message'] = "Booking #" . str_pad($booking_id, 6, '0', STR_PAD_LEFT) . " marked as In Progress!";
-                    $_SESSION['message_type'] = 'success';
-                }
+                $firebase->updateDoc('bookings', $booking_id, ['status' => 'repairing', 'admin_viewed' => true, 'updated_at' => $now]);
+                $_SESSION['message']      = "Booking {$shortId} marked as In Progress!";
+                $_SESSION['message_type'] = 'success';
                 break;
 
             case 'complete':
                 $final_price = floatval($_POST['final_price']);
                 $admin_notes = trim($_POST['admin_notes']);
-                $stmt = $pdo->prepare("UPDATE bookings SET status = 'completed', final_price = ?, admin_notes = ?, completed_date = CURRENT_DATE, admin_viewed = 1 WHERE id = ?");
-                if ($stmt->execute([$final_price, $admin_notes, $booking_id])) {
-                    $_SESSION['message'] = "Booking #" . str_pad($booking_id, 6, '0', STR_PAD_LEFT) . " completed successfully!";
-                    $_SESSION['message_type'] = 'success';
+                $firebase->updateDoc('bookings', $booking_id, [
+                    'status'         => 'completed',
+                    'final_price'    => $final_price,
+                    'admin_notes'    => $admin_notes,
+                    'completed_date' => date('Y-m-d'),
+                    'admin_viewed'   => true,
+                    'updated_at'     => $now,
+                ]);
+                // Update any linked service suggestions
+                $suggestions = $firebase->query('service_suggestions', [['booking_id', '==', $booking_id]]);
+                foreach ($suggestions as $s) {
+                    $firebase->updateDoc('service_suggestions', $s['id'], ['status' => 'done', 'updated_at' => $now]);
                 }
+                $_SESSION['message']      = "Booking {$shortId} completed successfully!";
+                $_SESSION['message_type'] = 'success';
                 break;
 
             case 'reschedule':
-    $new_date = $_POST['new_date'];
-    $new_time = $_POST['new_time'];
-    $reason = trim($_POST['reschedule_reason']);
-
-    // Get original date/time
-    $get_stmt = $pdo->prepare("SELECT booking_date, booking_time FROM bookings WHERE id = ?");
-    $get_stmt->execute([$booking_id]);
-    $orig_row = $get_stmt->fetch(PDO::FETCH_ASSOC);
-    $original_date = $orig_row['booking_date'];
-    $original_time = $orig_row['booking_time'];
-
-    // Update booking - 6 placeholders total
-    $update_stmt = $pdo->prepare("UPDATE bookings SET
-        booking_date = ?,
-        booking_time = ?,
-        original_date = ?,
-        original_time = ?,
-        reschedule_reason = ?,
-        rescheduled_by = 'admin',
-        status = 'confirmed',
-        admin_viewed = 1
-        WHERE id = ?");
-
-    if ($update_stmt->execute([$new_date, $new_time, $original_date, $original_time, $reason, $booking_id])) {
-        $_SESSION['message'] = "Booking #" . str_pad($booking_id, 6, '0', STR_PAD_LEFT) . " rescheduled and confirmed!";
-        $_SESSION['message_type'] = 'success';
-    } else {
-        $_SESSION['message'] = "Error rescheduling booking.";
-        $_SESSION['message_type'] = 'danger';
-    }
-    break;
+                $orig = $firebase->getDoc('bookings', $booking_id);
+                $firebase->updateDoc('bookings', $booking_id, [
+                    'booking_date'      => $_POST['new_date'],
+                    'booking_time'      => $_POST['new_time'],
+                    'original_date'     => $orig['booking_date'] ?? '',
+                    'original_time'     => $orig['booking_time'] ?? '',
+                    'reschedule_reason' => trim($_POST['reschedule_reason']),
+                    'rescheduled_by'    => 'admin',
+                    'status'            => 'confirmed',
+                    'admin_viewed'      => true,
+                    'updated_at'        => $now,
+                ]);
+                $_SESSION['message']      = "Booking {$shortId} rescheduled and confirmed!";
+                $_SESSION['message_type'] = 'success';
+                break;
 
             case 'revert_to_repairing':
-                $stmt = $pdo->prepare("UPDATE bookings SET status = 'repairing', final_price = NULL, admin_notes = NULL, completed_date = NULL WHERE id = ?");
-                if ($stmt->execute([$booking_id])) {
-                    $_SESSION['message'] = "Booking #" . str_pad($booking_id, 6, '0', STR_PAD_LEFT) . " reverted to In Progress!";
-                    $_SESSION['message_type'] = 'success';
-                }
+                $firebase->updateDoc('bookings', $booking_id, [
+                    'status'         => 'repairing',
+                    'final_price'    => 0.0,
+                    'admin_notes'    => '',
+                    'completed_date' => '',
+                    'updated_at'     => $now,
+                ]);
+                $_SESSION['message']      = "Booking {$shortId} reverted to In Progress!";
+                $_SESSION['message_type'] = 'success';
                 break;
         }
-        
+
         header("Location: " . $redirect_url);
         exit();
     }
@@ -192,50 +180,36 @@ if (!in_array($order, $valid_orders)) $order = 'desc';
 if (!in_array($sort_by, $valid_sort_by)) $sort_by = 'created_at';
 if (!in_array($sort_order, $valid_sort_order)) $sort_order = 'desc';
 
-/* ================= FETCH BOOKINGS ================= */
-$bookings = [];
-$sql = "SELECT 
-            b.*,
-            u.full_name as customer_name,
-            u.email as customer_email,
-            u.phone as customer_phone,
-            v.brand_name,
-            v.model,
-            v.year,
-            v.color,
-            v.number_plate,
-            sc.category_name as service_name,
-            sc.base_price as service_price
-        FROM bookings b
-        JOIN users u ON b.user_id = u.id
-        JOIN vehicles v ON b.vehicle_id = v.id
-        JOIN service_categories sc ON b.service_category_id = sc.id
-        WHERE b.status = '$filter'
-        ORDER BY $sort_by $sort_order";
+/* ================= FETCH BOOKINGS FROM FIRESTORE ================= */
+$orderDir = strtoupper($sort_order) === 'ASC' ? 'ASCENDING' : 'DESCENDING';
+$allBookings = $firebase->query('bookings', [['status', '==', $filter]], $sort_by, $orderDir);
 
-$result = $pdo->query($sql);
-if ($result) {
-    $bookings = $result->fetchAll(PDO::FETCH_ASSOC);
-}
+// Map denormalized fields to template-expected names
+$bookings = array_map(function($b) {
+    $b['customer_name']  = $b['user_name']            ?? '';
+    $b['customer_email'] = $b['user_email']            ?? '';
+    $b['customer_phone'] = '';
+    $b['brand_name']     = $b['vehicle_brand']         ?? '';
+    $b['model']          = $b['vehicle_model']         ?? '';
+    $b['year']           = $b['vehicle_year']          ?? '';
+    $b['color']          = $b['vehicle_color']         ?? '';
+    $b['number_plate']   = $b['vehicle_plate']         ?? '';
+    $b['service_name']   = $b['service_category_name'] ?? '';
+    $b['service_price']  = $b['estimated_price']       ?? 0;
+    return $b;
+}, $allBookings);
 
-// Get statistics (only pending, confirmed, repairing)
-$stats = [];
-$stats_sql = "SELECT
-    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_count,
-    SUM(CASE WHEN status = 'confirmed' THEN 1 ELSE 0 END) as confirmed_count,
-    SUM(CASE WHEN status = 'repairing' THEN 1 ELSE 0 END) as repairing_count,
-    SUM(CASE WHEN status = 'pending' AND admin_viewed = 0 THEN 1 ELSE 0 END) as unviewed_count
-FROM bookings";
-$stats_result = $pdo->query($stats_sql);
-if ($stats_result) {
-    $stats = $stats_result->fetch(PDO::FETCH_ASSOC);
-}
+// Stats
+$allForStats = $firebase->query('bookings');
+$stats = [
+    'pending_count'   => count(array_filter($allForStats, fn($b) => ($b['status'] ?? '') === 'pending')),
+    'confirmed_count' => count(array_filter($allForStats, fn($b) => ($b['status'] ?? '') === 'confirmed')),
+    'repairing_count' => count(array_filter($allForStats, fn($b) => ($b['status'] ?? '') === 'repairing')),
+    'unviewed_count'  => count(array_filter($allForStats, fn($b) => ($b['status'] ?? '') === 'pending' && !($b['admin_viewed'] ?? false))),
+];
 
 // Fetch available time slots
-$time_slots = [];
-$slots_sql = "SELECT slot_time FROM booking_timeslots WHERE is_active = 1 ORDER BY slot_time";
-$slots_result = $pdo->query($slots_sql);
-$time_slots = $slots_result->fetchAll(PDO::FETCH_ASSOC);
+$time_slots = $firebase->query('booking_timeslots', [['is_active', '==', true]], 'slot_time', 'ASCENDING');
 
 date_default_timezone_set('Asia/Kuala_Lumpur');
 $hour = date('G');

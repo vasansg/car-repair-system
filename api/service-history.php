@@ -25,12 +25,9 @@ $first_name = explode(' ', $full_name)[0];
 
 require_once __DIR__ . '/includes/config.php';
 
-// Fetch customer phone number from database
-$phone_sql = "SELECT phone FROM users WHERE id = ?";
-$phone_stmt = $pdo->prepare($phone_sql);
-$phone_stmt->execute([$user_id]);
-$phone_data = $phone_stmt->fetch(PDO::FETCH_ASSOC);
-$customer_phone = $phone_data['phone'] ?? 'N/A';
+// Fetch customer phone from Firestore
+$userData       = $firebase->getDoc('users', $user_id);
+$customer_phone = $userData['phone'] ?? 'N/A';
 
 // Get current date for greeting
 $hour = date('G');
@@ -42,49 +39,28 @@ if ($hour < 12) {
     $greeting = 'Good Evening';
 }
 
-// Fetch customer's completed and cancelled bookings
-// Fetch customer's completed bookings only (no cancelled)
-$bookings = [];
-$sql = "SELECT 
-            b.*,
-            v.brand_name,
-            v.model,
-            v.year,
-            v.color,
-            v.number_plate,
-            sc.category_name as service_name,
-            sc.estimated_hours,
-            (SELECT SUM(total_price) FROM service_parts WHERE booking_id = b.id) as parts_total
-        FROM bookings b
-        JOIN vehicles v ON b.vehicle_id = v.id
-        JOIN service_categories sc ON b.service_category_id = sc.id
-        WHERE b.user_id = ? AND b.status = 'completed'
-        ORDER BY b.completed_date DESC, b.created_at DESC";
+// Fetch completed bookings from Firestore (denormalized – vehicle/service info stored in booking doc)
+$bookings = $firebase->query('bookings', [
+    ['user_id', '==', $user_id],
+    ['status',  '==', 'completed'],
+], 'created_at', 'DESCENDING');
 
-$stmt = $pdo->prepare($sql);
-$stmt->execute([$user_id]);
-$bookings = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-// Get statistics - only completed count now
-$stats = [
-    'completed' => count($bookings)
-];
-
-foreach ($bookings as $booking) {
-    if ($booking['status'] == 'completed') {
-        $stats['completed']++;
-    } elseif ($booking['status'] == 'cancelled') {
-        $stats['cancelled']++;
-    }
+// For each booking, fetch parts total from booking_parts collection
+foreach ($bookings as &$booking) {
+    $parts = $firebase->query('booking_parts', [['booking_id', '==', $booking['id']]]);
+    $booking['parts_total'] = array_sum(array_column($parts, 'total_price'));
+    // Map field names for template compatibility
+    $booking['service_name']    = $booking['service_category_name'] ?? '';
+    $booking['estimated_hours'] = $booking['estimated_hours'] ?? '';
 }
+unset($booking);
+
+$stats = ['completed' => count($bookings)];
 
 // Fetch parts for each booking
 $parts_by_booking = [];
 foreach ($bookings as $booking) {
-    $parts_sql = "SELECT * FROM service_parts WHERE booking_id = ? ORDER BY id";
-    $parts_stmt = $pdo->prepare($parts_sql);
-    $parts_stmt->execute([$booking['id']]);
-    $parts_by_booking[$booking['id']] = $parts_stmt->fetchAll(PDO::FETCH_ASSOC);
+    $parts_by_booking[$booking['id']] = $firebase->query('booking_parts', [['booking_id', '==', $booking['id']]]);
 }
 ?>
 

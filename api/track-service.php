@@ -13,63 +13,70 @@ if (isset($_GET['ajax_check'])) {
     
     require_once __DIR__ . '/includes/config.php';
 
-    $user_id = $_SESSION['user_id'];
+    $user_id    = $_SESSION['user_id'];
     $last_check = isset($_GET['last_check']) ? intval($_GET['last_check']) : 0;
+    $lastCheckTs = gmdate('Y-m-d\TH:i:s\Z', $last_check);
 
-    // Check for booking status changes (when status was updated)
-    $status_change_sql = "SELECT b.id as booking_id, b.status as new_status,
-                                 b.updated_at, 'status_change' as change_type
-                          FROM bookings b
-                          WHERE b.user_id = ?
-                          AND b.status IN ('pending', 'confirmed', 'repairing', 'completed', 'cancelled')
-                          AND UNIX_TIMESTAMP( b.updated_at) > ?";
+    // Fetch all user bookings from Firestore
+    $allBookings = $firebase->query('bookings', [['user_id', '==', $user_id]]);
 
-    $status_stmt = $pdo->prepare($status_change_sql);
-    $status_stmt->execute([$user_id, $last_check]);
-    $status_changes = $status_stmt->fetchAll(PDO::FETCH_ASSOC);
+    // Filter status changes since last_check
+    $activeStatuses = ['pending', 'confirmed', 'repairing', 'completed', 'cancelled'];
+    $status_changes = [];
+    $active_bookings = [];
+    foreach ($allBookings as $b) {
+        if (in_array($b['status'] ?? '', $activeStatuses) && ($b['updated_at'] ?? '') > $lastCheckTs) {
+            $status_changes[] = [
+                'booking_id'  => $b['id'],
+                'new_status'  => $b['status'],
+                'updated_at'  => $b['updated_at'] ?? '',
+                'change_type' => 'status_change',
+            ];
+        }
+        if (in_array($b['status'] ?? '', ['pending', 'confirmed', 'repairing'])) {
+            $active_bookings[] = $b;
+        }
+    }
 
-    // Get latest service updates
-    $updates_sql = "SELECT u.*, b.id as booking_id, b.status as booking_status,
-                    v.brand_name, v.model, v.number_plate,
-                    sc.category_name as service_name, 'update' as change_type
-                    FROM service_updates u
-                    JOIN bookings b ON u.booking_id = b.id
-                    JOIN vehicles v ON b.vehicle_id = v.id
-                    JOIN service_categories sc ON b.service_category_id = sc.id
-                    WHERE b.user_id = ?
-                    AND b.status IN ('pending', 'confirmed', 'repairing')
-                    AND u.is_visible_to_customer = 1
-                    AND UNIX_TIMESTAMP( u.created_at) > ?
-                    ORDER BY u.created_at DESC";
+    // Fetch new service updates for active bookings
+    $new_updates = [];
+    foreach ($active_bookings as $b) {
+        $updates = $firebase->query('booking_updates', [
+            ['booking_id',             '==', $b['id']],
+            ['is_visible_to_customer', '==', true],
+        ]);
+        foreach ($updates as $u) {
+            if (($u['created_at'] ?? '') > $lastCheckTs) {
+                $new_updates[] = array_merge($u, [
+                    'booking_id'     => $b['id'],
+                    'booking_status' => $b['status'],
+                    'brand_name'     => $b['vehicle_brand'] ?? '',
+                    'model'          => $b['vehicle_model'] ?? '',
+                    'number_plate'   => $b['vehicle_plate'] ?? '',
+                    'service_name'   => $b['service_category_name'] ?? '',
+                    'change_type'    => 'update',
+                ]);
+            }
+        }
+    }
 
-    $updates_stmt = $pdo->prepare($updates_sql);
-    $updates_stmt->execute([$user_id, $last_check]);
-    $new_updates = $updates_stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    // Merge both types of changes
     $all_changes = array_merge($status_changes, $new_updates);
-    $has_changes = count($all_changes) > 0;
 
-    // Get current counts (always get fresh counts)
-    $stats_sql = "SELECT
-        SUM(CASE WHEN status IN ('pending', 'confirmed', 'repairing') THEN 1 ELSE 0 END) as active_count,
-        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_count,
-        SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_count
-        FROM bookings WHERE user_id = ?";
-    $stats_stmt = $pdo->prepare($stats_sql);
-    $stats_stmt->execute([$user_id]);
-    $stats_data = $stats_stmt->fetch(PDO::FETCH_ASSOC);
-    
+    // Compute stats
+    $active_count    = count(array_filter($allBookings, fn($b) => in_array($b['status'] ?? '', ['pending','confirmed','repairing'])));
+    $completed_count = count(array_filter($allBookings, fn($b) => ($b['status'] ?? '') === 'completed'));
+    $cancelled_count = count(array_filter($allBookings, fn($b) => ($b['status'] ?? '') === 'cancelled'));
+
     echo json_encode([
-        'has_updates' => $has_changes,
+        'has_updates'       => count($all_changes) > 0,
         'has_status_change' => count($status_changes) > 0,
-        'updates' => $all_changes,
-        'stats' => [
-            'active' => intval($stats_data['active_count'] ?? 0),
-            'completed' => intval($stats_data['completed_count'] ?? 0),
-            'cancelled' => intval($stats_data['cancelled_count'] ?? 0)
+        'updates'           => $all_changes,
+        'stats'             => [
+            'active'    => $active_count,
+            'completed' => $completed_count,
+            'cancelled' => $cancelled_count,
         ],
-        'timestamp' => time()
+        'timestamp' => time(),
     ]);
     exit();
 }
@@ -106,80 +113,60 @@ if (!in_array($current_tab, $valid_tabs)) {
     $current_tab = 'active';
 }
 
-// Fetch customer's bookings based on tab
-$bookings = [];
-$status_filter = '';
+// Fetch customer's bookings from Firestore
+$allBookings = $firebase->query('bookings', [['user_id', '==', $user_id]], 'created_at', 'DESCENDING');
 
-switch ($current_tab) {
-    case 'active':
-        $status_filter = "b.status IN ('pending', 'confirmed', 'repairing')";
-        break;
-    case 'completed':
-        $status_filter = "b.status = 'completed'";
-        break;
-    case 'cancelled':
-        $status_filter = "b.status = 'cancelled'";
-        break;
+// Filter by current tab
+$statusMap = [
+    'active'    => ['pending', 'confirmed', 'repairing'],
+    'completed' => ['completed'],
+    'cancelled' => ['cancelled'],
+];
+$allowedStatuses = $statusMap[$current_tab] ?? ['pending', 'confirmed', 'repairing'];
+
+$bookings = array_filter($allBookings, fn($b) => in_array($b['status'] ?? '', $allowedStatuses));
+
+// Map field names for template compatibility
+foreach ($bookings as &$b) {
+    $b['brand_name']   = $b['vehicle_brand']         ?? '';
+    $b['model']        = $b['vehicle_model']          ?? '';
+    $b['year']         = $b['vehicle_year']           ?? '';
+    $b['color']        = $b['vehicle_color']          ?? '';
+    $b['number_plate'] = $b['vehicle_plate']          ?? '';
+    $b['service_name'] = $b['service_category_name']  ?? '';
+    // Count visible updates for this booking
+    $updatesForBooking = $firebase->query('booking_updates', [
+        ['booking_id',             '==', $b['id']],
+        ['is_visible_to_customer', '==', true],
+    ]);
+    $b['update_count'] = count($updatesForBooking);
 }
+unset($b);
+$bookings = array_values($bookings);
 
-$sql = "SELECT 
-            b.*,
-            v.brand_name,
-            v.model,
-            v.year,
-            v.color,
-            v.number_plate,
-            sc.category_name as service_name,
-            (SELECT COUNT(*) FROM service_updates WHERE booking_id = b.id AND is_visible_to_customer = 1) as update_count
-        FROM bookings b
-        JOIN vehicles v ON b.vehicle_id = v.id
-        JOIN service_categories sc ON b.service_category_id = sc.id
-        WHERE b.user_id = ? AND $status_filter
-        ORDER BY 
-            CASE b.status 
-                WHEN 'repairing' THEN 1
-                WHEN 'confirmed' THEN 2
-                WHEN 'pending' THEN 3
-                WHEN 'completed' THEN 4
-                WHEN 'cancelled' THEN 5
-            END,
-            b.created_at DESC";
-
-$stmt = $pdo->prepare($sql);
-$stmt->execute([$user_id]);
-$bookings = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-// Get statistics for all tabs
+// Compute stats
 $stats = [
-    'active' => 0,
-    'completed' => 0,
-    'cancelled' => 0
+    'active'    => count(array_filter($allBookings, fn($b) => in_array($b['status'] ?? '', ['pending','confirmed','repairing']))),
+    'completed' => count(array_filter($allBookings, fn($b) => ($b['status'] ?? '') === 'completed')),
+    'cancelled' => count(array_filter($allBookings, fn($b) => ($b['status'] ?? '') === 'cancelled')),
 ];
 
-$stats_sql = "SELECT
-    SUM(CASE WHEN status IN ('pending', 'confirmed', 'repairing') THEN 1 ELSE 0 END) as active_count,
-    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_count,
-    SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_count
-FROM bookings WHERE user_id = ?";
-$stats_stmt = $pdo->prepare($stats_sql);
-$stats_stmt->execute([$user_id]);
-$stats_data = $stats_stmt->fetch(PDO::FETCH_ASSOC);
-
-$stats['active'] = $stats_data['active_count'] ?? 0;
-$stats['completed'] = $stats_data['completed_count'] ?? 0;
-$stats['cancelled'] = $stats_data['cancelled_count'] ?? 0;
-
-// Fetch updates for each booking
+// Fetch updates for each booking from Firestore
 $updates_by_booking = [];
 foreach ($bookings as $booking) {
-    $update_sql = "SELECT u.*, t.name as technician_name
-                   FROM service_updates u
-                   LEFT JOIN technicians t ON u.technician_id = t.id
-                   WHERE u.booking_id = ? AND u.is_visible_to_customer = 1
-                   ORDER BY u.created_at DESC";
-    $update_stmt = $pdo->prepare($update_sql);
-    $update_stmt->execute([$booking['id']]);
-    $updates_by_booking[$booking['id']] = $update_stmt->fetchAll(PDO::FETCH_ASSOC);
+    $updates = $firebase->query('booking_updates', [
+        ['booking_id',             '==', $booking['id']],
+        ['is_visible_to_customer', '==', true],
+    ], 'created_at', 'DESCENDING');
+    // Attach technician name if available
+    foreach ($updates as &$u) {
+        if (!empty($u['technician_id'])) {
+            $tech = $firebase->getDoc('technicians', $u['technician_id']);
+            $u['technician_name'] = $tech['name'] ?? '';
+        }
+    }
+    unset($u);
+    $updates_by_booking[$booking['id']] = $updates;
 }
 ?>
 

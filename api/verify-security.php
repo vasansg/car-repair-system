@@ -27,11 +27,8 @@ if (!isset($_SESSION['login_user'])) {
 $user_data = $_SESSION['login_user'];
 $error = '';
 
-// Get user's password hash, security image and phrase
-$sql = "SELECT password_hash, security_image_path, security_phrase, role FROM users WHERE id = ?";
-$stmt = $pdo->prepare($sql);
-$stmt->execute([$user_data['user_id']]);
-$user = $stmt->fetch(PDO::FETCH_ASSOC);
+// Get user's password hash, security image and phrase from Firestore
+$user = $firebase->getDoc('users', $user_data['user_id']);
 
 if (!$user) {
     session_destroy();

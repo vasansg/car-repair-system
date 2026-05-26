@@ -18,148 +18,106 @@ if ($_SESSION['role'] !== 'admin') {
 }
 
 /* ================= USER DATA ================= */
-$full_name = $_SESSION['full_name'];
-$email = $_SESSION['email'];
+$full_name  = $_SESSION['full_name'];
+$email      = $_SESSION['email'];
 $first_name = explode(' ', $full_name)[0];
 
 /* ================= DATABASE CONNECTION ================= */
 require_once __DIR__ . '/includes/config.php';
 
-// Ensure the service_suggestions table has the correct structure
-$check_table = $pdo->query("SELECT 1 FROM information_schema.columns WHERE table_name='service_suggestions' AND column_name='status'");
-if ($check_table->fetch(PDO::FETCH_ASSOC)) {
-    // Column exists; PostgreSQL ENUM altering is handled at schema level
-}
-
-// Prevent duplicate submissions with session token
 if (!isset($_SESSION['form_token'])) {
     $_SESSION['form_token'] = bin2hex(random_bytes(32));
 }
 
 /* ================= HANDLE FORM SUBMISSIONS ================= */
-$message = '';
+$message      = '';
 $message_type = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    
-    // Check for duplicate submission using token
     $submitted_token = $_POST['form_token'] ?? '';
-    $is_duplicate = ($submitted_token === ($_SESSION['last_token'] ?? ''));
-    
+    $is_duplicate    = ($submitted_token === ($_SESSION['last_token'] ?? ''));
+
     if (!$is_duplicate) {
         $_SESSION['last_token'] = $submitted_token;
-        
-        // Add new suggestions (multiple) - NO DUPLICATE CHECK
+        $now = gmdate('Y-m-d\TH:i:s\Z');
+
         if (isset($_POST['add_suggestions'])) {
-            $vehicle_id = intval($_POST['vehicle_id']);
-            $user_id = intval($_POST['user_id']);
-            $booking_id = isset($_POST['booking_id']) ? intval($_POST['booking_id']) : 0;
-            $service_ids = $_POST['service_ids'] ?? [];
+            $vehicle_id   = trim($_POST['vehicle_id']);
+            $user_id      = trim($_POST['user_id']);
+            $booking_id   = trim($_POST['booking_id'] ?? '');
+            $service_ids  = $_POST['service_ids'] ?? [];
             $suggested_date = $_POST['suggested_date'];
-            $notes = trim($_POST['notes']);
-            
+            $notes        = trim($_POST['notes']);
+
             if (empty($service_ids)) {
-                $message = "Please select at least one service to suggest.";
+                $message      = "Please select at least one service to suggest.";
                 $message_type = 'danger';
             } else {
                 $success_count = 0;
-                $error_count = 0;
-                
+                $error_count   = 0;
                 foreach ($service_ids as $service_id) {
-                    $service_id = intval($service_id);
-                    
-                    $insert_sql = "INSERT INTO service_suggestions
-                        (booking_id, vehicle_id, user_id, service_category_id, suggested_date, notes, status)
-                        VALUES (?, ?, ?, ?, ?, ?, 'pending')";
-
-                    $insert_stmt = $pdo->prepare($insert_sql);
-
-                    if (!$insert_stmt) {
-                        $error_count++;
-                        continue;
-                    }
-
-                    if ($insert_stmt->execute([
-                        $booking_id,
-                        $vehicle_id,
-                        $user_id,
-                        $service_id,
-                        $suggested_date,
-                        $notes
-                    ])) {
-                        $success_count++;
-                    } else {
-                        $error_count++;
-                    }
+                    $service_id = trim($service_id);
+                    $id = $firebase->addDoc('service_suggestions', [
+                        'booking_id'          => $booking_id,
+                        'vehicle_id'          => $vehicle_id,
+                        'user_id'             => $user_id,
+                        'service_category_id' => $service_id,
+                        'suggested_date'      => $suggested_date,
+                        'notes'               => $notes,
+                        'status'              => 'pending',
+                        'completed_notes'     => '',
+                        'created_at'          => $now,
+                        'updated_at'          => $now,
+                    ]);
+                    $id ? $success_count++ : $error_count++;
                 }
-                
                 if ($success_count > 0) {
                     $message = "$success_count service suggestion(s) added successfully!";
-                    if ($error_count > 0) {
-                        $message .= " $error_count suggestion(s) failed to add.";
-                    }
+                    if ($error_count > 0) $message .= " $error_count failed.";
                     $message_type = 'success';
                 } else {
-                    $message = "Error adding suggestions.";
+                    $message      = "Error adding suggestions.";
                     $message_type = 'danger';
                 }
             }
-            
             $_SESSION['form_token'] = bin2hex(random_bytes(32));
         }
-        
-        // Update suggestion
+
         if (isset($_POST['update_suggestion'])) {
-            $suggestion_id = intval($_POST['suggestion_id']);
-            $service_category_id = intval($_POST['service_category_id']);
-            $suggested_date = $_POST['suggested_date'];
-            $notes = trim($_POST['notes']);
-            
-            $update_sql = "UPDATE service_suggestions SET service_category_id = ?, suggested_date = ?, notes = ? WHERE id = ?";
-            $update_stmt = $pdo->prepare($update_sql);
+            $suggestion_id       = trim($_POST['suggestion_id']);
+            $service_category_id = trim($_POST['service_category_id']);
+            $suggested_date      = $_POST['suggested_date'];
+            $notes               = trim($_POST['notes']);
 
-            if ($update_stmt->execute([$service_category_id, $suggested_date, $notes, $suggestion_id])) {
-                $message = "Suggestion updated successfully!";
-                $message_type = 'success';
-            } else {
-                $message = "Error updating suggestion.";
-                $message_type = 'danger';
-            }
+            $ok = $firebase->updateDoc('service_suggestions', $suggestion_id, [
+                'service_category_id' => $service_category_id,
+                'suggested_date'      => $suggested_date,
+                'notes'               => $notes,
+                'updated_at'          => $now,
+            ]);
+            $message      = $ok ? "Suggestion updated successfully!" : "Error updating suggestion.";
+            $message_type = $ok ? 'success' : 'danger';
             $_SESSION['form_token'] = bin2hex(random_bytes(32));
         }
-        
-        // Delete suggestion
+
         if (isset($_POST['delete_suggestion'])) {
-            $suggestion_id = intval($_POST['suggestion_id']);
-            
-            $delete_sql = "DELETE FROM service_suggestions WHERE id = ?";
-            $delete_stmt = $pdo->prepare($delete_sql);
-
-            if ($delete_stmt->execute([$suggestion_id])) {
-                $message = "Suggestion deleted successfully!";
-                $message_type = 'success';
-            } else {
-                $message = "Error deleting suggestion.";
-                $message_type = 'danger';
-            }
+            $suggestion_id = trim($_POST['suggestion_id']);
+            $ok            = $firebase->deleteDoc('service_suggestions', $suggestion_id);
+            $message       = $ok ? "Suggestion deleted successfully!" : "Error deleting suggestion.";
+            $message_type  = $ok ? 'success' : 'danger';
             $_SESSION['form_token'] = bin2hex(random_bytes(32));
         }
-        
-        // Mark suggestion as done (manually)
-        if (isset($_POST['mark_done'])) {
-            $suggestion_id = intval($_POST['suggestion_id']);
-            $completed_notes = trim($_POST['completed_notes']);
-            
-            $update_sql = "UPDATE service_suggestions SET status = 'done', completed_notes = ? WHERE id = ?";
-            $update_stmt = $pdo->prepare($update_sql);
 
-            if ($update_stmt->execute([$completed_notes, $suggestion_id])) {
-                $message = "Suggestion marked as done!";
-                $message_type = 'success';
-            } else {
-                $message = "Error updating suggestion.";
-                $message_type = 'danger';
-            }
+        if (isset($_POST['mark_done'])) {
+            $suggestion_id   = trim($_POST['suggestion_id']);
+            $completed_notes = trim($_POST['completed_notes']);
+            $ok = $firebase->updateDoc('service_suggestions', $suggestion_id, [
+                'status'          => 'done',
+                'completed_notes' => $completed_notes,
+                'updated_at'      => $now,
+            ]);
+            $message      = $ok ? "Suggestion marked as done!" : "Error updating suggestion.";
+            $message_type = $ok ? 'success' : 'danger';
             $_SESSION['form_token'] = bin2hex(random_bytes(32));
         }
     } else {
@@ -168,121 +126,86 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // Get selected vehicle from URL
-$selected_vehicle_id = isset($_GET['vehicle_id']) ? intval($_GET['vehicle_id']) : 0;
+$selected_vehicle_id = trim($_GET['vehicle_id'] ?? '');
 
 /* ================= FETCH CUSTOMERS WITH VEHICLES ================= */
-$customers = [];
-$sql = "SELECT 
-            u.id, 
-            u.full_name, 
-            u.email, 
-            u.phone,
-            v.id as vehicle_id,
-            v.brand_name,
-            v.model,
-            v.year,
-            v.color,
-            v.number_plate
-        FROM users u
-        JOIN vehicles v ON u.id = v.user_id
-        WHERE u.role = 'customer' OR u.role IS NULL
-        ORDER BY u.full_name, v.brand_name";
+$allCustomers = $firebase->query('users', [['role', '==', 'customer']], 'full_name', 'ASCENDING');
+$allVehicles  = $firebase->query('vehicles', [], 'brand_name', 'ASCENDING');
 
-$result = $pdo->query($sql);
-if ($result) {
-    while ($row = $result->fetch(PDO::FETCH_ASSOC)) {
-        $customers[$row['id']]['info'] = [
-            'name' => $row['full_name'],
-            'email' => $row['email'],
-            'phone' => $row['phone']
-        ];
-        $customers[$row['id']]['vehicles'][] = [
-            'id' => $row['vehicle_id'],
-            'brand_name' => $row['brand_name'],
-            'model' => $row['model'],
-            'year' => $row['year'],
-            'color' => $row['color'],
-            'number_plate' => $row['number_plate']
-        ];
+$customers = [];
+foreach ($allCustomers as $cu) {
+    $customers[$cu['id']]['info'] = [
+        'name'  => $cu['full_name'],
+        'email' => $cu['email'],
+        'phone' => $cu['phone'] ?? '',
+    ];
+    $customers[$cu['id']]['vehicles'] = [];
+}
+foreach ($allVehicles as $v) {
+    $uid = $v['user_id'] ?? '';
+    if (isset($customers[$uid])) {
+        $customers[$uid]['vehicles'][] = $v;
     }
 }
 
-// Fetch service categories for dropdown
-$service_categories = [];
-$cat_sql = "SELECT * FROM service_categories WHERE is_active = 1 ORDER BY type, category_name";
-$cat_result = $pdo->query($cat_sql);
-$service_categories = $cat_result->fetchAll(PDO::FETCH_ASSOC);
-
-// Group categories by type
+/* ================= FETCH SERVICE CATEGORIES ================= */
+$service_categories = $firebase->query('service_categories', [['is_active', '==', true]], 'category_name', 'ASCENDING');
 $categories_by_type = [];
 foreach ($service_categories as $cat) {
-    $categories_by_type[$cat['type']][] = $cat;
+    $categories_by_type[$cat['type'] ?? 'General'][] = $cat;
+}
+ksort($categories_by_type);
+
+// Build a lookup for resolving category name by ID
+$catById = [];
+foreach ($service_categories as $cat) {
+    $catById[$cat['id']] = $cat;
 }
 
-// If a vehicle is selected, fetch its data
+/* ================= SELECTED VEHICLE ================= */
 $selected_vehicle_data = null;
-$active_suggestions = [];
-$completed_items = [];
+$active_suggestions    = [];
+$completed_items       = [];
 
-if ($selected_vehicle_id > 0) {
-    // Get vehicle details
-    $vehicle_sql = "SELECT v.*, u.full_name as customer_name, u.id as user_id 
-                    FROM vehicles v
-                    JOIN users u ON v.user_id = u.id
-                    WHERE v.id = ?";
-    $vehicle_stmt = $pdo->prepare($vehicle_sql);
-    $vehicle_stmt->execute([$selected_vehicle_id]);
-    $selected_vehicle_data = $vehicle_stmt->fetch(PDO::FETCH_ASSOC);
-    
-    if ($selected_vehicle_data) {
-        // ============ NO AUTO-UPDATE QUERIES - REMOVED ALL ============
-        // Suggestions will ONLY be updated manually by admin
-        // This prevents new suggestions from being auto-changed
-        
-        // Fetch ACTIVE suggestions (pending, booked, in_progress)
-        $active_sql = "SELECT 
-                        s.*,
-                        sc.category_name as service_name,
-                        sc.type as service_type,
-                        CASE 
-                            WHEN s.status = 'pending' THEN 1
-                            WHEN s.status = 'booked' THEN 2
-                            WHEN s.status = 'in_progress' THEN 3
-                            ELSE 4
-                        END as status_order
-                    FROM service_suggestions s
-                    JOIN service_categories sc ON s.service_category_id = sc.id
-                    WHERE s.vehicle_id = ? AND s.status IN ('pending', 'booked', 'in_progress')
-                    ORDER BY status_order, s.suggested_date ASC";
-        
-        $active_stmt = $pdo->prepare($active_sql);
-        $active_stmt->execute([$selected_vehicle_id]);
-        $active_suggestions = $active_stmt->fetchAll(PDO::FETCH_ASSOC);
-        
-        // Get DONE suggestions (for completed history)
-        $done_sql = "SELECT 
-                        s.*,
-                        sc.category_name as service_name,
-                        sc.type as service_type
-                    FROM service_suggestions s
-                    JOIN service_categories sc ON s.service_category_id = sc.id
-                    WHERE s.vehicle_id = ? AND s.status = 'done'
-                    ORDER BY s.updated_at DESC";
-        
-        $done_stmt = $pdo->prepare($done_sql);
-        $done_stmt->execute([$selected_vehicle_id]);
-        $done_suggestions = $done_stmt->fetchAll(PDO::FETCH_ASSOC);
-        
-        $completed_items = $done_suggestions;
-        
-        usort($completed_items, function($a, $b) {
-            $date_a = isset($a['completed_date']) ? strtotime($a['completed_date']) : 
-                      (isset($a['updated_at']) ? strtotime($a['updated_at']) : time());
-            
-            $date_b = isset($b['completed_date']) ? strtotime($b['completed_date']) : 
-                      (isset($b['updated_at']) ? strtotime($b['updated_at']) : time());
-            
-            return $date_b - $date_a;
+if (!empty($selected_vehicle_id)) {
+    $vehicle = $firebase->getDoc('vehicles', $selected_vehicle_id);
+    if ($vehicle) {
+        $customer = $firebase->getDoc('users', $vehicle['user_id'] ?? '');
+        $selected_vehicle_data = array_merge($vehicle, [
+            'customer_name' => $customer['full_name'] ?? '',
+            'user_id'       => $vehicle['user_id'] ?? '',
+        ]);
+
+        // Fetch all suggestions for this vehicle, split in PHP
+        $allSuggestions = $firebase->query(
+            'service_suggestions',
+            [['vehicle_id', '==', $selected_vehicle_id]],
+            'suggested_date', 'ASCENDING'
+        );
+
+        $active_statuses = ['pending', 'booked', 'in_progress'];
+        foreach ($allSuggestions as $sug) {
+            $catId   = $sug['service_category_id'] ?? '';
+            $catInfo = $catById[$catId] ?? [];
+            $sug['service_name'] = $catInfo['category_name'] ?? 'Unknown Service';
+            $sug['service_type'] = $catInfo['type'] ?? '';
+
+            if (in_array($sug['status'] ?? '', $active_statuses)) {
+                $active_suggestions[] = $sug;
+            } elseif (($sug['status'] ?? '') === 'done') {
+                $completed_items[] = $sug;
+            }
+        }
+
+        // Sort active: pending → booked → in_progress
+        usort($active_suggestions, function ($a, $b) {
+            $order = ['pending' => 1, 'booked' => 2, 'in_progress' => 3];
+            return ($order[$a['status']] ?? 9) <=> ($order[$b['status']] ?? 9);
+        });
+
+        // Sort completed by updated_at DESC
+        usort($completed_items, function ($a, $b) {
+            return strcmp($b['updated_at'] ?? '', $a['updated_at'] ?? '');
         });
     }
 }
@@ -1205,15 +1128,15 @@ $form_token = $_SESSION['form_token'];
                                                  </div>
                                                 <td class="action-cell" style="white-space: nowrap;">
                                                     <?php if ($suggestion['status'] == 'pending'): ?>
-                                                        <button class="btn-action btn-done" onclick="markSuggestionDone(<?php echo $suggestion['id']; ?>)" 
+                                                        <button class="btn-action btn-done" onclick="markSuggestionDone('<?php echo $suggestion['id']; ?>')"
                                                                 data-bs-toggle="modal" data-bs-target="#doneSuggestionModal" title="Mark as Done">
                                                             <i class="bi bi-check-lg"></i>
                                                         </button>
-                                                        <button class="btn-action btn-edit" onclick='editSuggestion(<?php echo json_encode($suggestion); ?>)' 
+                                                        <button class="btn-action btn-edit" onclick='editSuggestion(<?php echo json_encode($suggestion); ?>)'
                                                                 data-bs-toggle="modal" data-bs-target="#editSuggestionModal" title="Edit">
                                                             <i class="bi bi-pencil"></i>
                                                         </button>
-                                                        <button class="btn-action btn-delete" onclick="deleteSuggestion(<?php echo $suggestion['id']; ?>)" 
+                                                        <button class="btn-action btn-delete" onclick="deleteSuggestion('<?php echo $suggestion['id']; ?>')"
                                                                 data-bs-toggle="modal" data-bs-target="#deleteSuggestionModal" title="Delete">
                                                             <i class="bi bi-trash"></i>
                                                         </button>

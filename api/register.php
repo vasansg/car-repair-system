@@ -8,10 +8,8 @@ require __DIR__ . '/vendor/autoload.php';
 
 require_once __DIR__ . '/includes/config.php';
 
-// Get security images from database
-$images_sql = "SELECT * FROM security_images";
-$images_stmt = $pdo->query($images_sql);
-$security_images = $images_stmt->fetchAll(PDO::FETCH_ASSOC);
+// Get security images from Firestore
+$security_images = $firebase->query('security_images', [['is_active', '==', true]]);
 
 $error = '';
 $success = '';
@@ -68,20 +66,15 @@ function sendOTPEmail($toEmail, $toName, $otp) {
 // ================= HANDLE AJAX REQUESTS =================
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     header('Content-Type: application/json');
-    
+
     // Send OTP
     if (isset($_POST['send_otp'])) {
-        $email = trim($_POST['email']);
+        $email     = trim($_POST['email']);
         $full_name = trim($_POST['full_name']);
-        $phone = trim($_POST['phone']);
-        
-        // Check if email already exists
-        $check_sql = "SELECT id FROM users WHERE email = ?";
-        $check_stmt = $pdo->prepare($check_sql);
-        $check_stmt->execute([$email]);
-        $row = $check_stmt->fetch(PDO::FETCH_ASSOC);
+        $phone     = trim($_POST['phone']);
 
-        if ($row) {
+        // Check if email already exists in Firestore
+        if ($firebase->exists('users', [['email', '==', $email]])) {
             echo json_encode(['success' => false, 'message' => 'Email already registered!']);
             exit();
         }
@@ -191,53 +184,42 @@ if (isset($_POST['complete_registration'])) {
         $errors[] = "Please select a security image!";
     }
     
-    // Check if username already exists
+    // Check if username already exists in Firestore
     if (empty($errors)) {
-        $check_username_sql = "SELECT id FROM users WHERE username = ?";
-        $check_username_stmt = $pdo->prepare($check_username_sql);
-        $check_username_stmt->execute([$username]);
-        $existing_username = $check_username_stmt->fetch(PDO::FETCH_ASSOC);
-
-        if ($existing_username) {
+        if ($firebase->exists('users', [['username', '==', $username]])) {
             $errors[] = "Username already taken! Please choose another username.";
         }
     }
-    
+
     if (!empty($errors)) {
         echo json_encode(['success' => false, 'message' => implode(' ', $errors)]);
         exit();
     }
-    
-    // Get image path
-    $image_sql = "SELECT image_path FROM security_images WHERE id = ?";
-    $image_stmt = $pdo->prepare($image_sql);
-    $image_stmt->execute([$security_image_id]);
-    $image_data = $image_stmt->fetch(PDO::FETCH_ASSOC);
+
+    // Get image path from Firestore
+    $image_data = $firebase->getDoc('security_images', (string)$security_image_id);
 
     if ($image_data) {
-        $image_path = $image_data['image_path'];
-
+        $image_path    = $image_data['image_path'] ?? '';
         $password_hash = password_hash($password, PASSWORD_DEFAULT);
 
-        $role = 'customer';
-        $created_at = date('Y-m-d H:i:s');
+        $newId = $firebase->addDoc('users', [
+            'email'               => $email,
+            'username'            => $username,
+            'password_hash'       => $password_hash,
+            'full_name'           => $full_name,
+            'phone'               => $phone,
+            'security_image_path' => $image_path,
+            'security_phrase'     => $security_phrase,
+            'role'                => 'customer',
+            'is_active'           => true,
+            'created_at'          => gmdate('Y-m-d\TH:i:s\Z'),
+        ]);
 
-        $sql = "INSERT INTO users (email, username, password_hash, full_name, phone,
-                security_image_path, security_phrase, role, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
-
-        $stmt = $pdo->prepare($sql);
-
-        if ($stmt->execute([$email, $username, $password_hash, $full_name,
-                            $phone, $image_path, $security_phrase, $role, $created_at])) {
-            // Clear session
-            unset($_SESSION['temp_email']);
-            unset($_SESSION['temp_fullname']);
-            unset($_SESSION['temp_phone']);
-            unset($_SESSION['email_otp']);
-            unset($_SESSION['otp_expiry']);
-            unset($_SESSION['email_verified']);
-            unset($_SESSION['registration_step']);
+        if ($newId) {
+            unset($_SESSION['temp_email'], $_SESSION['temp_fullname'], $_SESSION['temp_phone'],
+                  $_SESSION['email_otp'], $_SESSION['otp_expiry'], $_SESSION['email_verified'],
+                  $_SESSION['registration_step']);
 
             echo json_encode(['success' => true, 'message' => 'Registration successful! Redirecting to login...', 'redirect' => 'login.php']);
         } else {

@@ -36,69 +36,28 @@ if (isset($_GET['check_updates'])) {
     $last_viewed_customers = isset($_SESSION['viewed_customers']) ? $_SESSION['viewed_customers'] : 0;
     $last_viewed_vehicles = isset($_SESSION['viewed_vehicles']) ? $_SESSION['viewed_vehicles'] : 0;
     
-    // Check for new bookings since last check (for badge increment)
-    $new_bookings_since_check = 0;
-    $bookings_sql = "SELECT COUNT(*) as new_count FROM bookings
-                     WHERE status = 'pending' AND UNIX_TIMESTAMP(created_at) > ?";
-    $bookings_stmt = $pdo->prepare($bookings_sql);
-    $bookings_stmt->execute([$last_check]);
-    $new_bookings_since_check = $bookings_stmt->fetch(PDO::FETCH_ASSOC)['new_count'];
+    $lastCheckTs       = gmdate('Y-m-d\TH:i:s\Z', $last_check);
+    $lastViewedBkTs    = gmdate('Y-m-d\TH:i:s\Z', $last_viewed_bookings);
+    $lastViewedCustTs  = gmdate('Y-m-d\TH:i:s\Z', $last_viewed_customers);
+    $lastViewedVehTs   = gmdate('Y-m-d\TH:i:s\Z', $last_viewed_vehicles);
 
-    // Check for new customers since last check
-    $new_customers_since_check = 0;
-    $customers_sql = "SELECT COUNT(*) as new_count FROM users
-                      WHERE role = 'customer' AND UNIX_TIMESTAMP(created_at) > ?";
-    $customers_stmt = $pdo->prepare($customers_sql);
-    $customers_stmt->execute([$last_check]);
-    $new_customers_since_check = $customers_stmt->fetch(PDO::FETCH_ASSOC)['new_count'];
+    // Fetch from Firestore and filter in PHP
+    $allBookings  = $firebase->query('bookings');
+    $allCustomers = $firebase->query('users', [['role', '==', 'customer']]);
+    $allVehicles  = $firebase->query('vehicles');
 
-    // Check for new vehicles since last check
-    $new_vehicles_since_check = 0;
-    $vehicles_sql = "SELECT COUNT(*) as new_count FROM vehicles
-                     WHERE UNIX_TIMESTAMP(created_at) > ?";
-    $vehicles_stmt = $pdo->prepare($vehicles_sql);
-    $vehicles_stmt->execute([$last_check]);
-    $new_vehicles_since_check = $vehicles_stmt->fetch(PDO::FETCH_ASSOC)['new_count'];
+    $new_bookings_since_check  = count(array_filter($allBookings,  fn($b) => ($b['status'] ?? '') === 'pending' && ($b['created_at'] ?? '') > $lastCheckTs));
+    $new_customers_since_check = count(array_filter($allCustomers, fn($u) => ($u['created_at'] ?? '') > $lastCheckTs));
+    $new_vehicles_since_check  = count(array_filter($allVehicles,  fn($v) => ($v['created_at'] ?? '') > $lastCheckTs));
 
-    // Get total unviewed counts (since admin last viewed the module)
-    $unviewed_bookings = 0;
-    $unviewed_bookings_sql = "SELECT COUNT(*) as count FROM bookings
-                              WHERE status = 'pending' AND UNIX_TIMESTAMP(created_at) > ?";
-    $unviewed_bookings_stmt = $pdo->prepare($unviewed_bookings_sql);
-    $unviewed_bookings_stmt->execute([$last_viewed_bookings]);
-    $unviewed_bookings = $unviewed_bookings_stmt->fetch(PDO::FETCH_ASSOC)['count'];
+    $unviewed_bookings  = count(array_filter($allBookings,  fn($b) => ($b['status'] ?? '') === 'pending' && ($b['created_at'] ?? '') > $lastViewedBkTs));
+    $unviewed_customers = count(array_filter($allCustomers, fn($u) => ($u['created_at'] ?? '') > $lastViewedCustTs));
+    $unviewed_vehicles  = count(array_filter($allVehicles,  fn($v) => ($v['created_at'] ?? '') > $lastViewedVehTs));
 
-    $unviewed_customers = 0;
-    $unviewed_customers_sql = "SELECT COUNT(*) as count FROM users
-                               WHERE role = 'customer' AND UNIX_TIMESTAMP(created_at) > ?";
-    $unviewed_customers_stmt = $pdo->prepare($unviewed_customers_sql);
-    $unviewed_customers_stmt->execute([$last_viewed_customers]);
-    $unviewed_customers = $unviewed_customers_stmt->fetch(PDO::FETCH_ASSOC)['count'];
-
-    $unviewed_vehicles = 0;
-    $unviewed_vehicles_sql = "SELECT COUNT(*) as count FROM vehicles
-                              WHERE UNIX_TIMESTAMP(created_at) > ?";
-    $unviewed_vehicles_stmt = $pdo->prepare($unviewed_vehicles_sql);
-    $unviewed_vehicles_stmt->execute([$last_viewed_vehicles]);
-    $unviewed_vehicles = $unviewed_vehicles_stmt->fetch(PDO::FETCH_ASSOC)['count'];
-
-    // Get current totals
-    $total_customers = 0;
-    $total_vehicles = 0;
-    $pending_bookings = 0;
-    $active_services = 0;
-
-    $result = $pdo->query("SELECT COUNT(*) as count FROM users WHERE role = 'customer'");
-    if ($result) $total_customers = $result->fetch(PDO::FETCH_ASSOC)['count'];
-
-    $result = $pdo->query("SELECT COUNT(*) as count FROM vehicles");
-    if ($result) $total_vehicles = $result->fetch(PDO::FETCH_ASSOC)['count'];
-
-    $result = $pdo->query("SELECT COUNT(*) as count FROM bookings WHERE status = 'pending'");
-    if ($result) $pending_bookings = $result->fetch(PDO::FETCH_ASSOC)['count'];
-
-    $result = $pdo->query("SELECT COUNT(*) as count FROM bookings WHERE status = 'repairing'");
-    if ($result) $active_services = $result->fetch(PDO::FETCH_ASSOC)['count'];
+    $total_customers  = count($allCustomers);
+    $total_vehicles   = count($allVehicles);
+    $pending_bookings = count(array_filter($allBookings, fn($b) => ($b['status'] ?? '') === 'pending'));
+    $active_services  = count(array_filter($allBookings, fn($b) => ($b['status'] ?? '') === 'repairing'));
     
     echo json_encode([
         'has_updates' => ($new_bookings_since_check > 0 || $new_customers_since_check > 0 || $new_vehicles_since_check > 0),
@@ -132,59 +91,25 @@ if (isset($_POST['mark_module_viewed'])) {
     exit();
 }
 
-// Get stats for dashboard
-$total_customers = 0;
-$total_vehicles = 0;
-$pending_bookings = 0;
-$active_services = 0;
+// Get stats for dashboard from Firestore
+$allBookings  = $firebase->query('bookings');
+$allCustomers = $firebase->query('users', [['role', '==', 'customer']]);
+$allVehicles  = $firebase->query('vehicles');
 
-// Get total customers
-$result = $pdo->query("SELECT COUNT(*) as count FROM users WHERE role = 'customer'");
-if ($result) {
-    $total_customers = $result->fetch(PDO::FETCH_ASSOC)['count'];
-}
-
-// Get total vehicles
-$result = $pdo->query("SELECT COUNT(*) as count FROM vehicles");
-if ($result) {
-    $total_vehicles = $result->fetch(PDO::FETCH_ASSOC)['count'];
-}
-
-// Get pending bookings
-$result = $pdo->query("SELECT COUNT(*) as count FROM bookings WHERE status = 'pending'");
-if ($result) {
-    $pending_bookings = $result->fetch(PDO::FETCH_ASSOC)['count'];
-}
-
-// Get confirmed bookings - ADD THIS HERE
-$confirmed_bookings = 0;
-$result = $pdo->query("SELECT COUNT(*) as count FROM bookings WHERE status = 'confirmed'");
-if ($result) {
-    $confirmed_bookings = $result->fetch(PDO::FETCH_ASSOC)['count'];
-}
-
-// Get active services (repairing)
-$result = $pdo->query("SELECT COUNT(*) as count FROM bookings WHERE status = 'repairing'");
-if ($result) {
-    $active_services = $result->fetch(PDO::FETCH_ASSOC)['count'];
-}
-// Get last viewed times from session
-$last_viewed_bookings = isset($_SESSION['viewed_bookings']) ? $_SESSION['viewed_bookings'] : 0;
-$last_viewed_customers = isset($_SESSION['viewed_customers']) ? $_SESSION['viewed_customers'] : 0;
+$total_customers    = count($allCustomers);
+$total_vehicles     = count($allVehicles);
+$pending_bookings   = count(array_filter($allBookings, fn($b) => ($b['status'] ?? '') === 'pending'));
+$confirmed_bookings = count(array_filter($allBookings, fn($b) => ($b['status'] ?? '') === 'confirmed'));
+$active_services    = count(array_filter($allBookings, fn($b) => ($b['status'] ?? '') === 'repairing'));
 
 // Count new items since last view
-$new_bookings_count = 0;
-$new_customers_count = 0;
+$last_viewed_bookings  = $_SESSION['viewed_bookings']  ?? 0;
+$last_viewed_customers = $_SESSION['viewed_customers'] ?? 0;
+$lastViewedBkTs   = gmdate('Y-m-d\TH:i:s\Z', $last_viewed_bookings);
+$lastViewedCustTs = gmdate('Y-m-d\TH:i:s\Z', $last_viewed_customers);
 
-$new_bookings_sql = "SELECT COUNT(*) as count FROM bookings WHERE status = 'pending' AND UNIX_TIMESTAMP(created_at) > ?";
-$new_bookings_stmt = $pdo->prepare($new_bookings_sql);
-$new_bookings_stmt->execute([$last_viewed_bookings]);
-$new_bookings_count = $new_bookings_stmt->fetch(PDO::FETCH_ASSOC)['count'];
-
-$new_customers_sql = "SELECT COUNT(*) as count FROM users WHERE role = 'customer' AND UNIX_TIMESTAMP(created_at) > ?";
-$new_customers_stmt = $pdo->prepare($new_customers_sql);
-$new_customers_stmt->execute([$last_viewed_customers]);
-$new_customers_count = $new_customers_stmt->fetch(PDO::FETCH_ASSOC)['count'];
+$new_bookings_count  = count(array_filter($allBookings,  fn($b) => ($b['status'] ?? '') === 'pending' && ($b['created_at'] ?? '') > $lastViewedBkTs));
+$new_customers_count = count(array_filter($allCustomers, fn($u) => ($u['created_at'] ?? '') > $lastViewedCustTs));
 
 ?>
 

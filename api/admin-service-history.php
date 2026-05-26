@@ -30,119 +30,100 @@ $message = '';
 $message_type = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $booking_id = isset($_POST['booking_id']) ? intval($_POST['booking_id']) : 0;
-    
+    $booking_id = isset($_POST['booking_id']) ? trim($_POST['booking_id']) : '';
+
     // Add part via AJAX
     if (isset($_POST['add_part_ajax'])) {
-        $booking_id = intval($_POST['booking_id']);
-        $part_name = trim($_POST['part_name']);
-        $quantity = intval($_POST['quantity']);
-        $unit_price = floatval($_POST['unit_price']);
+        $part_name       = trim($_POST['part_name']);
+        $quantity        = intval($_POST['quantity']);
+        $unit_price      = floatval($_POST['unit_price']);
         $warranty_months = intval($_POST['warranty_months']);
-        $warranty_info = trim($_POST['warranty_info']);
-        
-        $insert_sql = "INSERT INTO service_parts (booking_id, part_name, quantity, unit_price, warranty_months, warranty_info)
-                       VALUES (?, ?, ?, ?, ?, ?)";
-        $insert_stmt = $pdo->prepare($insert_sql);
+        $warranty_info   = trim($_POST['warranty_info']);
+        $total_price     = $quantity * $unit_price;
 
-        if ($insert_stmt->execute([$booking_id, $part_name, $quantity, $unit_price, $warranty_months, $warranty_info])) {
-            $new_id = $pdo->lastInsertId();
+        $newPartId = $firebase->addDoc('booking_parts', [
+            'booking_id'      => $booking_id,
+            'part_name'       => $part_name,
+            'quantity'        => $quantity,
+            'unit_price'      => $unit_price,
+            'total_price'     => $total_price,
+            'warranty_months' => $warranty_months,
+            'warranty_info'   => $warranty_info,
+            'created_at'      => gmdate('Y-m-d\TH:i:s\Z'),
+        ]);
+
+        if ($newPartId) {
             echo json_encode([
-                'success' => true,
-                'id' => $new_id,
-                'part_name' => $part_name,
-                'quantity' => $quantity,
-                'unit_price' => $unit_price,
-                'total_price' => $quantity * $unit_price,
+                'success'         => true,
+                'id'              => $newPartId,
+                'part_name'       => $part_name,
+                'quantity'        => $quantity,
+                'unit_price'      => $unit_price,
+                'total_price'     => $total_price,
                 'warranty_months' => $warranty_months,
-                'warranty_info' => $warranty_info
+                'warranty_info'   => $warranty_info,
             ]);
         } else {
-            echo json_encode(['success' => false, 'error' => '']);
+            echo json_encode(['success' => false, 'error' => 'Failed to add part']);
         }
         exit();
     }
-    
+
     // Handle delete via AJAX
     if (isset($_POST['delete_part_ajax'])) {
-        $part_id = intval($_POST['part_id']);
-        $booking_id = intval($_POST['booking_id']);
-        
-        $delete_sql = "DELETE FROM service_parts WHERE id = ? AND booking_id = ?";
-        $delete_stmt = $pdo->prepare($delete_sql);
-
-        if ($delete_stmt->execute([$part_id, $booking_id])) {
-            echo json_encode(['success' => true, 'part_id' => $part_id]);
-        } else {
-            echo json_encode(['success' => false, 'error' => '']);
-        }
+        $part_id = trim($_POST['part_id']);
+        $ok = $firebase->deleteDoc('booking_parts', $part_id);
+        echo json_encode(['success' => $ok, 'part_id' => $part_id]);
         exit();
     }
 
     // Regular delete part (non-AJAX)
     if (isset($_POST['delete_part'])) {
-        $part_id = intval($_POST['part_id']);
-        $booking_id = intval($_POST['booking_id']);
-
-        $delete_sql = "DELETE FROM service_parts WHERE id = ? AND booking_id = ?";
-        $delete_stmt = $pdo->prepare($delete_sql);
-
-        if ($delete_stmt->execute([$part_id, $booking_id])) {
-            $message = "Part removed successfully!";
+        $part_id = trim($_POST['part_id']);
+        if ($firebase->deleteDoc('booking_parts', $part_id)) {
+            $message      = "Part removed successfully!";
             $message_type = 'success';
         }
     }
 }
 
-/* ================= FETCH COMPLETED BOOKINGS ================= */
-$bookings = [];
-$sql = "SELECT 
-            b.*,
-            u.full_name as customer_name,
-            u.email as customer_email,
-            u.phone as customer_phone,
-            v.brand_name,
-            v.model,
-            v.year,
-            v.color,
-            v.number_plate,
-            sc.category_name as service_name,
-            sc.base_price as service_price,
-            (SELECT SUM(total_price) FROM service_parts WHERE booking_id = b.id) as parts_total
-        FROM bookings b
-        JOIN users u ON b.user_id = u.id
-        JOIN vehicles v ON b.vehicle_id = v.id
-        JOIN service_categories sc ON b.service_category_id = sc.id
-        WHERE b.status = 'completed'
-        ORDER BY b.completed_date DESC, b.id DESC";
+/* ================= FETCH COMPLETED BOOKINGS FROM FIRESTORE ================= */
+$rawBookings = $firebase->query('bookings', [['status', '==', 'completed']], 'created_at', 'DESCENDING');
 
-$result = $pdo->query($sql);
-if ($result) {
-    $bookings = $result->fetchAll(PDO::FETCH_ASSOC);
-}
+$bookings = array_map(function($b) {
+    $b['customer_name']  = $b['user_name']            ?? '';
+    $b['customer_email'] = $b['user_email']            ?? '';
+    $b['customer_phone'] = '';
+    $b['brand_name']     = $b['vehicle_brand']         ?? '';
+    $b['model']          = $b['vehicle_model']         ?? '';
+    $b['year']           = $b['vehicle_year']          ?? '';
+    $b['color']          = $b['vehicle_color']         ?? '';
+    $b['number_plate']   = $b['vehicle_plate']         ?? '';
+    $b['service_name']   = $b['service_category_name'] ?? '';
+    $b['service_price']  = $b['estimated_price']       ?? 0;
+    return $b;
+}, $rawBookings);
 
-// Fetch parts for each booking
-$parts_by_booking = [];
-
-foreach ($bookings as $booking) {
-    // Fetch parts
-    $parts_sql = "SELECT * FROM service_parts WHERE booking_id = ? ORDER BY id";
-    $parts_stmt = $pdo->prepare($parts_sql);
-    $parts_stmt->execute([$booking['id']]);
-    $parts_by_booking[$booking['id']] = $parts_stmt->fetchAll(PDO::FETCH_ASSOC);
-}
-
-// Fetch service updates for timeline
+// Fetch parts and updates for each booking
+$parts_by_booking   = [];
 $updates_by_booking = [];
+
 foreach ($bookings as $booking) {
-    $update_sql = "SELECT u.*, t.name as technician_name 
-                   FROM service_updates u
-                   LEFT JOIN technicians t ON u.technician_id = t.id
-                   WHERE u.booking_id = ?
-                   ORDER BY u.created_at ASC";
-    $update_stmt = $pdo->prepare($update_sql);
-    $update_stmt->execute([$booking['id']]);
-    $updates_by_booking[$booking['id']] = $update_stmt->fetchAll(PDO::FETCH_ASSOC);
+    $parts = $firebase->query('booking_parts', [['booking_id', '==', $booking['id']]], 'created_at', 'ASCENDING');
+    $parts_by_booking[$booking['id']] = $parts;
+
+    // parts_total
+    $bookings[array_search($booking, $bookings)]['parts_total'] = array_sum(array_column($parts, 'total_price'));
+
+    $updates = $firebase->query('booking_updates', [['booking_id', '==', $booking['id']]], 'created_at', 'ASCENDING');
+    foreach ($updates as &$u) {
+        if (!empty($u['technician_id'])) {
+            $tech = $firebase->getDoc('technicians', $u['technician_id']);
+            $u['technician_name'] = $tech['name'] ?? '';
+        }
+    }
+    unset($u);
+    $updates_by_booking[$booking['id']] = $updates;
 }
 
 // Get statistics
