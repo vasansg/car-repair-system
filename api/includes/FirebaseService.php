@@ -41,7 +41,7 @@ class FirebaseService
         $cacheFile = sys_get_temp_dir() . '/fbsvc_' . md5($this->sa['client_email']) . '.json';
         if (file_exists($cacheFile)) {
             $c = json_decode(file_get_contents($cacheFile), true);
-            if ($c && ($c['exp'] ?? 0) > time() + 60) {
+            if ($c && !empty($c['token']) && ($c['exp'] ?? 0) > time() + 60) {
                 $this->cachedToken = $c['token'];
                 $this->tokenExpiry = $c['exp'];
                 return $this->cachedToken;
@@ -59,10 +59,13 @@ class FirebaseService
         $res  = $this->http('POST', self::TOKEN_URL,
             http_build_query(['grant_type' => 'urn:ietf:params:oauth2:grant-type:jwt-bearer', 'assertion' => $jwt]),
             'application/x-www-form-urlencoded', false);
-        $data = json_decode($res, true);
+        $data = json_decode($res ?? '', true);
+        if (empty($data['access_token'])) {
+            throw new \RuntimeException('Firebase token request failed: ' . ($res ?? 'no response from Google'));
+        }
         $this->cachedToken = $data['access_token'];
         $this->tokenExpiry = $now + ($data['expires_in'] ?? 3600);
-        file_put_contents($cacheFile, json_encode(['token' => $this->cachedToken, 'exp' => $this->tokenExpiry]));
+        @file_put_contents($cacheFile, json_encode(['token' => $this->cachedToken, 'exp' => $this->tokenExpiry]));
         return $this->cachedToken;
     }
 
@@ -71,7 +74,13 @@ class FirebaseService
         $h = $this->b64u(json_encode(['alg' => 'RS256', 'typ' => 'JWT']));
         $p = $this->b64u(json_encode($payload));
         $in = "$h.$p";
-        openssl_sign($in, $sig, openssl_pkey_get_private($this->sa['private_key']), OPENSSL_ALGO_SHA256);
+        // Replace literal \n with real newlines in case the key came through an env var
+        $rawKey = str_replace('\n', "\n", $this->sa['private_key']);
+        $pkey = openssl_pkey_get_private($rawKey);
+        if ($pkey === false) {
+            throw new \RuntimeException('Invalid Firebase private key — check FIREBASE_SERVICE_ACCOUNT_JSON formatting');
+        }
+        openssl_sign($in, $sig, $pkey, OPENSSL_ALGO_SHA256);
         return "$in." . $this->b64u($sig);
     }
 
